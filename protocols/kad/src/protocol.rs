@@ -27,7 +27,7 @@
 //! is used to send messages to remote peers.
 
 use std::{borrow::Cow, convert::TryFrom, time::Duration, time::Instant};
-use std::{io, iter};
+use std::io;
 use unsigned_varint::codec;
 use bytes::BytesMut;
 use codec::UviBytes;
@@ -38,7 +38,7 @@ use async_trait::async_trait;
 use async_std::task;
 
 use libp2prs_core::{Multiaddr, PeerId};
-use libp2prs_core::upgrade::{Upgrader, UpgradeInfo};
+use libp2prs_core::upgrade::UpgradeInfo;
 use libp2prs_swarm::protocol_handler::{ProtocolHandler, Notifiee, IProtocolHandler};
 use libp2prs_swarm::connection::Connection;
 use libp2prs_traits::{ReadEx, WriteEx};
@@ -145,6 +145,9 @@ impl Into<proto::message::Peer> for KadPeer {
     }
 }
 
+
+type ProtocolId = &'static [u8];
+
 /// Configuration for a Kademlia connection upgrade. When applied to a connection, turns this
 /// connection into a `Stream + Sink` whose items are of type `KadRequestMsg` and `KadResponseMsg`.
 // TODO: if, as suspected, we can confirm with Protocol Labs that each open Kademlia substream does
@@ -152,7 +155,7 @@ impl Into<proto::message::Peer> for KadPeer {
 //       `OutboundUpgrade` to be just a single message
 #[derive(Debug, Clone)]
 pub struct KademliaProtocolConfig {
-    protocol_name: Cow<'static, [u8]>,
+    protocol_name: ProtocolId,
     /// Maximum allowed size of a packet.
     max_packet_size: usize,
 }
@@ -165,8 +168,8 @@ impl KademliaProtocolConfig {
 
     /// Modifies the protocol name used on the wire. Can be used to create incompatibilities
     /// between networks on purpose.
-    pub fn set_protocol_name(&mut self, name: impl Into<Cow<'static, [u8]>>) {
-        self.protocol_name = name.into();
+    pub fn set_protocol_name(&mut self, name: ProtocolId) {
+        self.protocol_name = name;
     }
 
     /// Modifies the maximum allowed size of a single Kademlia packet.
@@ -178,14 +181,14 @@ impl KademliaProtocolConfig {
 impl Default for KademliaProtocolConfig {
     fn default() -> Self {
         KademliaProtocolConfig {
-            protocol_name: Cow::Borrowed(DEFAULT_PROTO_NAME),
+            protocol_name: DEFAULT_PROTO_NAME,
             max_packet_size: DEFAULT_MAX_PACKET_SIZE,
         }
     }
 }
 
 impl UpgradeInfo for KademliaProtocolConfig {
-    type Info = Cow<'static, [u8]>;
+    type Info = ProtocolId;
 
     fn protocol_info(&self) -> Vec<Self::Info> {
         vec![self.protocol_name]
