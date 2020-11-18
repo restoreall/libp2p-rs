@@ -27,7 +27,7 @@ libp2prs-tcp = { path = "transports/tcp", version = "0.1.0", package = "libp2prs
 libp2prs-dns = { path = "transports/dns", version = "0.1.0", package = "libp2prs-dns" }
 libp2prs-websocket = { path = "transports/websocket", version = "0.1.0", package = "libp2prs-websocket" }
 libp2prs-swarm = { path = "swarm", version = "0.1.0", package = "libp2prs-swarm" }
-
+libp2prs-kad = { path = "protocols/kad", version = "0.1.0", package = "libp2prs-kad" }
 
 async-std = { version = "1.6", features = ["attributes", "unstable"] }
 async-trait = "0.1"
@@ -72,6 +72,7 @@ members = [
   "protocols/plaintext",
   "protocols/noise",
   "protocols/floodsub",
+  "protocols/kad",
   "core",
   "transports/tcp",
   "transports/dns",
