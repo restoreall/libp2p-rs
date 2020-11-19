@@ -20,7 +20,7 @@
 
 //! The Kademlia connection protocol upgrade and associated message types.
 //!
-//! The connection protocol upgrade is provided by [`KademliaProtocolConfig`], with the
+//! The connection protocol upgrade is provided by [`KadProtocolHandler`], with the
 //! request and response types [`KadRequestMsg`] and [`KadResponseMsg`], respectively.
 //! The upgrade's output is a `Sink + Stream` of messages. The `Stream` component is used
 //! to poll the underlying transport for incoming messages, and the `Sink` component
@@ -154,22 +154,16 @@ type ProtocolId = &'static [u8];
 //       only one request, then we can change the output of the `InboundUpgrade` and
 //       `OutboundUpgrade` to be just a single message
 #[derive(Debug, Clone)]
-pub struct KademliaProtocolConfig {
+pub struct KadProtocolHandler {
     protocol_name: ProtocolId,
     /// Maximum allowed size of a packet.
     max_packet_size: usize,
 }
 
-impl KademliaProtocolConfig {
+impl KadProtocolHandler {
     /// Returns the configured protocol name.
     pub fn protocol_name(&self) -> &[u8] {
         &self.protocol_name
-    }
-
-    /// Modifies the protocol name used on the wire. Can be used to create incompatibilities
-    /// between networks on purpose.
-    pub fn set_protocol_name(&mut self, name: ProtocolId) {
-        self.protocol_name = name;
     }
 
     /// Modifies the maximum allowed size of a single Kademlia packet.
@@ -178,16 +172,16 @@ impl KademliaProtocolConfig {
     }
 }
 
-impl Default for KademliaProtocolConfig {
+impl Default for KadProtocolHandler {
     fn default() -> Self {
-        KademliaProtocolConfig {
+        KadProtocolHandler {
             protocol_name: DEFAULT_PROTO_NAME,
             max_packet_size: DEFAULT_MAX_PACKET_SIZE,
         }
     }
 }
 
-impl UpgradeInfo for KademliaProtocolConfig {
+impl UpgradeInfo for KadProtocolHandler {
     type Info = ProtocolId;
 
     fn protocol_info(&self) -> Vec<Self::Info> {
@@ -195,7 +189,7 @@ impl UpgradeInfo for KademliaProtocolConfig {
     }
 }
 
-impl Notifiee for KademliaProtocolConfig {
+impl Notifiee for KadProtocolHandler {
     fn connected(&mut self, conn: &mut Connection) {
         let peer_id = conn.remote_peer();
         task::spawn(async move {
@@ -205,7 +199,7 @@ impl Notifiee for KademliaProtocolConfig {
 }
 
 #[async_trait]
-impl ProtocolHandler for KademliaProtocolConfig {
+impl ProtocolHandler for KadProtocolHandler {
     async fn handle(&mut self, stream: Substream, _info: <Self as UpgradeInfo>::Info) -> Result<(), Box<dyn Error>> {
         unimplemented!()
     }
@@ -215,7 +209,7 @@ impl ProtocolHandler for KademliaProtocolConfig {
     }
 }
 /*
-impl<C> ProtocolHandler<C> for KademliaProtocolConfig
+impl<C> ProtocolHandler<C> for KadProtocolHandler
 where
     C: AsyncRead + AsyncWrite + Unpin,
 {
@@ -247,7 +241,7 @@ where
     }
 }
 
-impl<C> OutboundUpgrade<C> for KademliaProtocolConfig
+impl<C> OutboundUpgrade<C> for KadProtocolHandler
 where
     C: AsyncRead + AsyncWrite + Unpin,
 {
@@ -617,7 +611,7 @@ mod tests {
     use futures::{Future, Sink, Stream};
     use libp2p_core::{PeerId, PublicKey, Transport};
     use multihash::{encode, Hash};
-    use protocol::{KadConnectionType, KadPeer, KademliaProtocolConfig};
+    use protocol::{KadConnectionType, KadPeer, KadProtocolHandler};
     use std::sync::mpsc;
     use std::thread;
 
@@ -667,7 +661,7 @@ mod tests {
             let (tx, rx) = mpsc::channel();
 
             let bg_thread = thread::spawn(move || {
-                let transport = TcpConfig::new().with_upgrade(KademliaProtocolConfig);
+                let transport = TcpConfig::new().with_upgrade(KadProtocolHandler);
 
                 let (listener, addr) = transport
                     .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -687,7 +681,7 @@ mod tests {
                 let _ = rt.block_on(future).unwrap();
             });
 
-            let transport = TcpConfig::new().with_upgrade(KademliaProtocolConfig);
+            let transport = TcpConfig::new().with_upgrade(KadProtocolHandler);
 
             let future = transport
                 .dial(rx.recv().unwrap())

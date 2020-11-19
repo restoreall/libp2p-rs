@@ -28,9 +28,10 @@
 pub mod kbucket;
 pub mod protocol;
 pub mod record;
+pub mod kad;
 
 mod addresses;
-//mod behaviour;
+mod control;
 mod jobs;
 mod query;
 
