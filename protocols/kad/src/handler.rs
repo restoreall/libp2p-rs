@@ -187,7 +187,7 @@ impl<TUserData> SubstreamState<TUserData> {
 
 /// Event produced by the Kademlia handler.
 #[derive(Debug)]
-pub enum KademliaHandlerEvent<TUserData> {
+pub enum ProtocolEvent<TUserData> {
     /// The configured protocol name has been confirmed by the peer through
     /// a successfully negotiated substream.
     ///
@@ -460,7 +460,7 @@ where
     TUserData: Clone + Send + 'static,
 {
     type InEvent = KademliaHandlerIn<TUserData>;
-    type OutEvent = KademliaHandlerEvent<TUserData>;
+    type OutEvent = ProtocolEvent<TUserData>;
     type Error = io::Error; // TODO: better error type?
     type InboundProtocol = upgrade::EitherUpgrade<KademliaProtocolConfig, upgrade::DeniedUpgrade>;
     type OutboundProtocol = KademliaProtocolConfig;
@@ -689,7 +689,7 @@ where
         if let ProtocolStatus::Confirmed = self.protocol_status {
             self.protocol_status = ProtocolStatus::Reported;
             return Poll::Ready(ProtocolsHandlerEvent::Custom(
-                KademliaHandlerEvent::ProtocolConfirmed {
+                ProtocolEvent::ProtocolConfirmed {
                     endpoint: self.endpoint.clone()
                 }))
         }
@@ -760,7 +760,7 @@ fn advance_substream<TUserData>(
         ProtocolsHandlerEvent<
             KademliaProtocolConfig,
             (KadRequestMsg, Option<TUserData>),
-            KademliaHandlerEvent<TUserData>,
+            ProtocolEvent<TUserData>,
             io::Error,
         >,
     >,
@@ -785,7 +785,7 @@ fn advance_substream<TUserData>(
                         ),
                         Err(error) => {
                             let event = if let Some(user_data) = user_data {
-                                Some(ProtocolsHandlerEvent::Custom(KademliaHandlerEvent::QueryError {
+                                Some(ProtocolsHandlerEvent::Custom(ProtocolEvent::QueryError {
                                     error: KademliaHandlerQueryErr::Io(error),
                                     user_data
                                 }))
@@ -804,7 +804,7 @@ fn advance_substream<TUserData>(
                 ),
                 Poll::Ready(Err(error)) => {
                     let event = if let Some(user_data) = user_data {
-                        Some(ProtocolsHandlerEvent::Custom(KademliaHandlerEvent::QueryError {
+                        Some(ProtocolsHandlerEvent::Custom(ProtocolEvent::QueryError {
                             error: KademliaHandlerQueryErr::Io(error),
                             user_data
                         }))
@@ -836,7 +836,7 @@ fn advance_substream<TUserData>(
                 ),
                 Poll::Ready(Err(error)) => {
                     let event = if let Some(user_data) = user_data {
-                        Some(ProtocolsHandlerEvent::Custom(KademliaHandlerEvent::QueryError {
+                        Some(ProtocolsHandlerEvent::Custom(ProtocolEvent::QueryError {
                             error: KademliaHandlerQueryErr::Io(error),
                             user_data,
                         }))
@@ -864,14 +864,14 @@ fn advance_substream<TUserData>(
                 false,
             ),
             Poll::Ready(Some(Err(error))) => {
-                let event = KademliaHandlerEvent::QueryError {
+                let event = ProtocolEvent::QueryError {
                     error: KademliaHandlerQueryErr::Io(error),
                     user_data,
                 };
                 (None, Some(ProtocolsHandlerEvent::Custom(event)), false)
             }
             Poll::Ready(None) => {
-                let event = KademliaHandlerEvent::QueryError {
+                let event = ProtocolEvent::QueryError {
                     error: KademliaHandlerQueryErr::Io(io::ErrorKind::UnexpectedEof.into()),
                     user_data,
                 };
@@ -879,7 +879,7 @@ fn advance_substream<TUserData>(
             }
         },
         SubstreamState::OutReportError(error, user_data) => {
-            let event = KademliaHandlerEvent::QueryError { error, user_data };
+            let event = ProtocolEvent::QueryError { error, user_data };
             (None, Some(ProtocolsHandlerEvent::Custom(event)), false)
         }
         SubstreamState::OutClosing(mut stream) => match Sink::poll_close(Pin::new(&mut stream), cx) {
@@ -959,7 +959,7 @@ fn advance_substream<TUserData>(
 fn process_kad_request<TUserData>(
     event: KadRequestMsg,
     connec_unique_id: UniqueConnecId,
-) -> Result<KademliaHandlerEvent<TUserData>, io::Error> {
+) -> Result<ProtocolEvent<TUserData>, io::Error> {
     match event {
         KadRequestMsg::Ping => {
             // TODO: implement; although in practice the PING message is never
@@ -969,22 +969,22 @@ fn process_kad_request<TUserData>(
                 "the PING Kademlia message is not implemented",
             ))
         }
-        KadRequestMsg::FindNode { key } => Ok(KademliaHandlerEvent::FindNodeReq {
+        KadRequestMsg::FindNode { key } => Ok(ProtocolEvent::FindNodeReq {
             key,
             request_id: KademliaRequestId { connec_unique_id },
         }),
-        KadRequestMsg::GetProviders { key } => Ok(KademliaHandlerEvent::GetProvidersReq {
+        KadRequestMsg::GetProviders { key } => Ok(ProtocolEvent::GetProvidersReq {
             key,
             request_id: KademliaRequestId { connec_unique_id },
         }),
         KadRequestMsg::AddProvider { key, provider } => {
-            Ok(KademliaHandlerEvent::AddProvider { key, provider })
+            Ok(ProtocolEvent::AddProvider { key, provider })
         }
-        KadRequestMsg::GetValue { key } => Ok(KademliaHandlerEvent::GetRecord {
+        KadRequestMsg::GetValue { key } => Ok(ProtocolEvent::GetRecord {
             key,
             request_id: KademliaRequestId { connec_unique_id },
         }),
-        KadRequestMsg::PutValue { record } => Ok(KademliaHandlerEvent::PutRecord {
+        KadRequestMsg::PutValue { record } => Ok(ProtocolEvent::PutRecord {
             record,
             request_id: KademliaRequestId { connec_unique_id },
         })
@@ -995,18 +995,18 @@ fn process_kad_request<TUserData>(
 fn process_kad_response<TUserData>(
     event: KadResponseMsg,
     user_data: TUserData,
-) -> KademliaHandlerEvent<TUserData> {
+) -> ProtocolEvent<TUserData> {
     // TODO: must check that the response corresponds to the request
     match event {
         KadResponseMsg::Pong => {
             // We never send out pings.
-            KademliaHandlerEvent::QueryError {
+            ProtocolEvent::QueryError {
                 error: KademliaHandlerQueryErr::UnexpectedMessage,
                 user_data,
             }
         }
         KadResponseMsg::FindNode { closer_peers } => {
-            KademliaHandlerEvent::FindNodeRes {
+            ProtocolEvent::FindNodeRes {
                 closer_peers,
                 user_data,
             }
@@ -1014,7 +1014,7 @@ fn process_kad_response<TUserData>(
         KadResponseMsg::GetProviders {
             closer_peers,
             provider_peers,
-        } => KademliaHandlerEvent::GetProvidersRes {
+        } => ProtocolEvent::GetProvidersRes {
             closer_peers,
             provider_peers,
             user_data,
@@ -1022,13 +1022,13 @@ fn process_kad_response<TUserData>(
         KadResponseMsg::GetValue {
             record,
             closer_peers,
-        } => KademliaHandlerEvent::GetRecordRes {
+        } => ProtocolEvent::GetRecordRes {
             record,
             closer_peers,
             user_data,
         },
         KadResponseMsg::PutValue { key, value, .. } => {
-            KademliaHandlerEvent::PutRecordRes {
+            ProtocolEvent::PutRecordRes {
                 key,
                 value,
                 user_data,

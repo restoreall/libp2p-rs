@@ -22,24 +22,13 @@ mod memory;
 
 pub use memory::{MemoryStore, MemoryStoreConfig};
 
-use crate::K_VALUE;
+use crate::{K_VALUE, KadError};
 use super::*;
 use std::borrow::Cow;
 
 /// The result of an operation on a `RecordStore`.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, KadError>;
 
-/// The possible errors of a `RecordStore` operation.
-#[derive(Debug)]
-pub enum Error {
-    /// The store is at capacity w.r.t. the total number of stored records.
-    MaxRecords,
-    /// The store is at capacity w.r.t. the total number of stored keys for
-    /// provider records.
-    MaxProvidedKeys,
-    /// The value of a record to be stored is too large.
-    ValueTooLarge,
-}
 
 /// Trait for types implementing a record store.
 ///

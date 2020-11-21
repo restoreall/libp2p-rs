@@ -38,34 +38,14 @@ use libp2prs_swarm::substream::Substream;
 use libp2prs_swarm::Control as SwarmControl;
 use libp2prs_traits::{ReadEx, WriteEx};
 
-use crate::protocol::{KadProtocolHandler, KadPeer};
-use crate::control::Control;
+use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent};
+use crate::control::{Control, ControlCommand};
 
 use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
-use crate::{record, kbucket, Addresses};
-
-pub(crate) enum ControlCommand {
-    /// Provide adds the given key to the content routing system.
-    /// It also announces it, otherwise it is just kept in the local
-    /// accounting of which objects are being provided.
-    Provide(record::Key, oneshot::Sender<()>),
-    // Lookup peers who are able to provide a given key.
-    //
-    // When count is 0, this method will return an unbounded number of
-    // results.
-    GetProviders(record::Key, oneshot::Sender<Option<QueryId>>),
-    // Searches for a peer with given ID, returns a peer.AddrInfo
-    // with relevant addresses.
-    FindPeer(PeerId, oneshot::Sender<Option<Vec<Multiaddr>>>),
-
-    // Adds value corresponding to given Key.
-    PutValue(record::Key, oneshot::Sender<()>),
-    // Searches value corresponding to given Key.
-    GetValue(record::Key, oneshot::Sender<()>),
-}
+use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -77,9 +57,6 @@ pub struct Kademlia<TStore> {
 
     /// The k-bucket insertion strategy.
     kbucket_inserts: KademliaBucketInserts,
-
-    /// Name of the wire protocol.
-    protocol_name: ProtocolId,
 
     /// The currently active (i.e. in-progress) queries.
     queries: QueryPool<QueryInner>,
@@ -114,6 +91,23 @@ pub struct Kademlia<TStore> {
 
     /// The record storage.
     store: TStore,
+
+    // Used to communicate with Swarm.
+    swarm: Option<SwarmControl>,
+
+    // New peer is connected or peer is dead.
+    // peer_tx: mpsc::UnboundedSender<PeerEvent>,
+    // peer_rx: mpsc::UnboundedReceiver<PeerEvent>,
+
+    /// Used to handle the incoming Kad messages.
+    incoming_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>,
+    incoming_rx: mpsc::UnboundedReceiver<ProtocolEvent<u32>>,
+
+    /// Used to control the Kademlia.
+    /// control_tx becomes the Control and control_rx is monitored by
+    /// the Kademlia main loop.
+    control_tx: mpsc::UnboundedSender<ControlCommand>,
+    control_rx: mpsc::UnboundedReceiver<ControlCommand>,
 }
 
 
@@ -148,7 +142,6 @@ pub enum KademliaBucketInserts {
 pub struct KademliaConfig {
     kbucket_pending_timeout: Duration,
     query_config: QueryConfig,
-    protocol_name: ProtocolId,
     record_ttl: Option<Duration>,
     record_replication_interval: Option<Duration>,
     record_publication_interval: Option<Duration>,
@@ -163,7 +156,6 @@ impl Default for KademliaConfig {
         KademliaConfig {
             kbucket_pending_timeout: Duration::from_secs(60),
             query_config: QueryConfig::default(),
-            protocol_name: Default::default(),
             record_ttl: Some(Duration::from_secs(36 * 60 * 60)),
             record_replication_interval: Some(Duration::from_secs(60 * 60)),
             record_publication_interval: Some(Duration::from_secs(24 * 60 * 60)),
@@ -176,15 +168,6 @@ impl Default for KademliaConfig {
 }
 
 impl KademliaConfig {
-    /// Sets a custom protocol name.
-    ///
-    /// Kademlia nodes only communicate with other nodes using the same protocol
-    /// name. Using a custom name therefore allows to segregate the DHT from
-    /// others, if that is desired.
-    pub fn set_protocol_name(&mut self, name: ProtocolId) -> &mut Self {
-        self.protocol_name = name;
-        self
-    }
 
     /// Sets the timeout for a single query.
     ///
@@ -366,11 +349,18 @@ impl<TStore> Kademlia<TStore>
             .provider_publication_interval
             .map(AddProviderJob::new);
 
+        let (incoming_tx, incoming_rx) = mpsc::unbounded();
+        let (control_tx, control_rx) = mpsc::unbounded();
+
         Kademlia {
             store,
+            swarm: None,
+            incoming_rx,
+            incoming_tx,
+            control_tx,
+            control_rx,
             kbuckets: KBucketsTable::new(local_key, config.kbucket_pending_timeout),
             kbucket_inserts: config.kbucket_inserts,
-            protocol_name: config.protocol_name,
             queued_events: VecDeque::with_capacity(config.query_config.replication_factor.get()),
             queries: QueryPool::new(config.query_config),
             connected_peers: Default::default(),
@@ -379,7 +369,7 @@ impl<TStore> Kademlia<TStore>
             record_ttl: config.record_ttl,
             provider_record_ttl: config.provider_record_ttl,
             connection_idle_timeout: config.connection_idle_timeout,
-            local_addrs: HashSet::new()
+            local_addrs: HashSet::new(),
         }
     }
 
@@ -422,7 +412,7 @@ impl<TStore> Kademlia<TStore>
                 None
             })
     }
-
+/*
     /// Adds a known listen address of a peer participating in the DHT to the
     /// routing table.
     ///
@@ -529,7 +519,7 @@ impl<TStore> Kademlia<TStore>
             }
         }
     }
-
+*/
     /// Removes a peer from the routing table.
     ///
     /// Returns `None` if the peer was not in the routing table,
@@ -632,7 +622,7 @@ impl<TStore> Kademlia<TStore>
     /// does not update the record's expiration in local storage, thus a given record
     /// with an explicit expiration will always expire at that instant and until then
     /// is subject to regular (re-)replication and (re-)publication.
-    pub fn put_record(&mut self, mut record: Record, quorum: Quorum) -> Result<QueryId, store::Error> {
+    pub fn put_record(&mut self, mut record: Record, quorum: Quorum) -> Result<QueryId> {
         record.publisher = Some(self.kbuckets.local_key().preimage().clone());
         self.store.put(record.clone())?;
         record.expires = record.expires.or_else(||
@@ -692,7 +682,7 @@ impl<TStore> Kademlia<TStore>
     ///
     /// > **Note**: Bootstrapping requires at least one node of the DHT to be known.
     /// > See [`Kademlia::add_address`].
-    pub fn bootstrap(&mut self) -> Result<QueryId, NoKnownPeers> {
+    pub fn bootstrap(&mut self) -> Result<QueryId> {
         let local_key = self.kbuckets.local_key().clone();
         let info = QueryInfo::Bootstrap {
             peer: local_key.preimage().clone(),
@@ -700,7 +690,7 @@ impl<TStore> Kademlia<TStore>
         };
         let peers = self.kbuckets.closest_keys(&local_key).collect::<Vec<_>>();
         if peers.is_empty() {
-            Err(NoKnownPeers())
+            Err(KadError::NoKnownPeers)
         } else {
             let inner = QueryInner::new(info);
             Ok(self.queries.add_iter_closest(local_key, peers, inner))
@@ -729,7 +719,7 @@ impl<TStore> Kademlia<TStore>
     ///
     /// The results of the (repeated) provider announcements sent by this node are
     /// reported via [`KademliaEvent::QueryResult{QueryResult::StartProviding}`].
-    pub fn start_providing(&mut self, key: record::Key) -> Result<QueryId, store::Error> {
+    pub fn start_providing(&mut self, key: record::Key) -> Result<QueryId> {
         // Note: We store our own provider records locally without local addresses
         // to avoid redundant storage and outdated addresses. Instead these are
         // acquired on demand when returning a `ProviderRecord` for the local node.
@@ -1404,7 +1394,7 @@ impl<TStore> Kademlia<TStore>
 
         // The remote receives a [`KademliaHandlerIn::PutRecordRes`] even in the
         // case where the record is discarded due to being expired. Given that
-        // the remote sent the local node a [`KademliaHandlerEvent::PutRecord`]
+        // the remote sent the local node a [`ProtocolEvent::PutRecord`]
         // request, the remote perceives the local node as one node among the k
         // closest nodes to the target. In addition returning
         // [`KademliaHandlerIn::PutRecordRes`] does not reveal any internal
@@ -1433,6 +1423,208 @@ impl<TStore> Kademlia<TStore>
                 log::info!("Provider record not stored: {:?}", e);
             }
         }
+    }
+
+    /// Get the protocol handler of Kademlia, swarm will call "handle" func after stream negotiation.
+    pub fn handler(&self) -> KadProtocolHandler {
+        KadProtocolHandler::new(self.incoming_tx.clone())
+    }
+    /// Get the controller of Kademlia, which can be used to manipulate the Kad-DHT.
+    pub fn control(&self) -> Control {
+        Control::new(self.control_tx.clone())
+    }
+
+    /// Start the main message loop of Kademlia.
+    pub fn start(mut self, swarm: SwarmControl) {
+        self.swarm = Some(swarm);
+
+        // well, self 'move' explicitly,
+        let mut kad = self;
+        task::spawn(async move {
+            let _ = kad.process_loop().await;
+        });
+    }
+
+
+    /// Message Process Loop.
+    pub async fn process_loop(&mut self) -> Result<()> {
+        let result = self.next().await;
+        //
+        // if !self.peer_rx.is_terminated() {
+        //     self.peer_rx.close();
+        //     while self.peer_rx.next().await.is_some() {
+        //         // just drain
+        //     }
+        // }
+        //
+        // if !self.incoming_rx.is_terminated() {
+        //     self.incoming_rx.close();
+        //     while self.incoming_rx.next().await.is_some() {
+        //         // just drain
+        //     }
+        // }
+        //
+        // if !self.control_rx.is_terminated() {
+        //     self.control_rx.close();
+        //     while let Some(cmd) = self.control_rx.next().await {
+        //         match cmd {
+        //             ControlCommand::Publish(_, reply) => {
+        //                 let _ = reply.send(());
+        //             }
+        //             ControlCommand::Subscribe(_, reply) => {
+        //                 let _ = reply.send(None);
+        //             }
+        //             ControlCommand::Ls(reply) => {
+        //                 let _ = reply.send(Vec::new());
+        //             }
+        //             ControlCommand::GetPeers(_, reply) => {
+        //                 let _ = reply.send(Vec::new());
+        //             }
+        //         }
+        //     }
+        // }
+        //
+        // if !self.cancel_rx.is_terminated() {
+        //     self.cancel_rx.close();
+        //     while self.cancel_rx.next().await.is_some() {
+        //         // just drain
+        //     }
+        // }
+        //
+        // self.drop_all_peers();
+        // self.drop_all_my_topics();
+        // self.drop_all_topics();
+
+        result
+    }
+
+    async fn next(&mut self) -> Result<()> {
+        loop {
+            select! {
+                // cmd = self.peer_rx.next() => {
+                //     self.handle_peer_event(cmd).await;
+                // }
+                evt = self.incoming_rx.next() => {
+                    self.handle_incoming_message(evt).await?;
+                }
+                cmd = self.control_rx.next() => {
+                    self.on_control_command(cmd).await?;
+                }
+            }
+        }
+    }
+
+    // Always wait to send message.
+    async fn handle_sending_message(&mut self, rpid: PeerId, mut writer: Substream) {
+        // let (mut tx, mut rx) = mpsc::unbounded();
+        //
+        // let _ = tx.send(self.get_hello_packet()).await;
+        //
+        // self.peers.insert(rpid.clone(), tx);
+        //
+        // task::spawn(async move {
+        //     loop {
+        //         match rx.next().await {
+        //             Some(rpc) => {
+        //                 log::trace!("send rpc msg: {:?}", rpc);
+        //                 // if failed, should reset?
+        //                 let _ = writer.write_one(rpc.into_bytes().as_slice()).await;
+        //             }
+        //             None => return,
+        //         }
+        //     }
+        // });
+    }
+
+    // If remote peer is dead, remove it from peers and topics.
+    async fn handle_remove_dead_peer(&mut self, peer_id: PeerId) {
+        // let tx = self.peers.remove(&rpid);
+        // match tx {
+        //     Some(mut tx) => {
+        //         let _ = tx.close().await;
+        //     }
+        //     None => return,
+        // }
+        //
+        // for ps in self.topics.values_mut() {
+        //     ps.remove(&rpid);
+        // }
+    }
+
+    // Check if stream / connection is closed.
+    async fn handle_peer_eof(&mut self, rpid: PeerId, mut reader: Substream) {
+        // let mut peer_dead_tx = self.peer_tx.clone();
+        // task::spawn(async move {
+        //     loop {
+        //         if reader.read_one(2048).await.is_err() {
+        //             let _ = peer_dead_tx.send(PeerEvent::DeadPeer(rpid.clone())).await;
+        //             return;
+        //         }
+        //     }
+        // });
+    }
+
+    // Handle when new peer connect.
+    async fn handle_add_new_peer(&mut self, pid: PeerId) {
+        let stream = self.control.as_mut().unwrap().new_stream(pid.clone(), vec!["KAD_ID"]).await;
+
+        // if new stream failed, ignore it Since some peer don's support floodsub protocol
+        // if let Ok(stream) = stream {
+        //     let writer = stream.clone();
+        //
+        //     log::trace!("open stream to {}", pid);
+        //
+        //     self.handle_sending_message(pid.clone(), writer).await;
+        //     self.handle_peer_eof(pid.clone(), stream).await;
+        // }
+    }
+
+    // Handle incoming Kad messages received by protocol handler.
+    async fn handle_incoming_message(&mut self, msg: Option<ProtocolEvent<u32>>) -> Result<()> {
+        match msg {
+            Some(ProtocolEvent::Connected(peer_id)) => {
+                //self.handle_add_new_peer(peer_id).await;
+                Ok(())
+            }
+            Some(ProtocolEvent::Disconnected(peer_id)) => {
+                //self.handle_remove_dead_peer(peer_id).await;
+                Ok(())
+            }
+            Some(ProtocolEvent::AddProvider { key, provider }) => {
+                Ok(())
+            }
+            Some(ProtocolEvent::FindNodeReq { key, request_id }) => {
+                Ok(())
+            }
+            Some(_) => {
+                Ok(())
+            }
+            None => Err(KadError::Closed(1)),
+        }
+    }
+
+    // Process publish or subscribe command.
+    async fn on_control_command(&mut self, cmd: Option<ControlCommand>) -> Result<()> {
+        match cmd {
+            Some(ControlCommand::Providing(key, reply)) => {
+                let _ = reply.send(());
+            }
+            Some(ControlCommand::GetProviders(key, reply)) => {
+                let _ = reply.send(None);
+            }
+            Some(ControlCommand::FindPeer(peer_id, reply)) => {
+                let _ = reply.send(None);
+            }
+            Some(ControlCommand::PutValue(key, reply)) => {
+                let _ = reply.send(());
+            }
+            Some(ControlCommand::GetValue(key, reply)) => {
+                let _ = reply.send(());
+            }
+            None => {}
+        }
+
+        Ok(())
     }
 }
 
@@ -1465,356 +1657,6 @@ pub struct Kad {
     peers: HashMap<PeerId, mpsc::UnboundedSender<FloodsubRpc>>,
 }
 */
-
-
-impl<TStore> Kademlia<TStore> {
-    /// Create a new 'FloodSub'.
-    pub fn new(config: FloodsubConfig, store: TStore) -> Self {
-        // let (peer_tx, peer_rx) = mpsc::unbounded();
-        // let (incoming_tx, incoming_rx) = mpsc::unbounded();
-        // let (control_tx, control_rx) = mpsc::unbounded();
-
-        Kademlia {
-        }
-    }
-
-    /// Get handler of floodsub, swarm will call "handle" func after muxer negotiate success.
-    pub fn handler(&self) -> Handler {
-        Handler::new(self.incoming_tx.clone(), self.peer_tx.clone())
-    }
-
-    /// Get control of floodsub, which can be used to publish or subscribe.
-    pub fn control(&self) -> Control {
-        Control::new(self.control_tx.clone(), self.config.clone())
-    }
-
-    /// Start message process loop.
-    pub fn start(mut self, control: Swarm_Control) {
-        self.control = Some(control);
-
-        // well, self 'move' explicitly,
-        let mut floodsub = self;
-        task::spawn(async move {
-            let _ = floodsub.process_loop().await;
-        });
-    }
-
-    /// Message Process Loop.
-    pub async fn process_loop(&mut self) -> Result<()> {
-        let result = self.next().await;
-
-        if !self.peer_rx.is_terminated() {
-            self.peer_rx.close();
-            while self.peer_rx.next().await.is_some() {
-                // just drain
-            }
-        }
-
-        if !self.incoming_rx.is_terminated() {
-            self.incoming_rx.close();
-            while self.incoming_rx.next().await.is_some() {
-                // just drain
-            }
-        }
-
-        if !self.control_rx.is_terminated() {
-            self.control_rx.close();
-            while let Some(cmd) = self.control_rx.next().await {
-                match cmd {
-                    ControlCommand::Publish(_, reply) => {
-                        let _ = reply.send(());
-                    }
-                    ControlCommand::Subscribe(_, reply) => {
-                        let _ = reply.send(None);
-                    }
-                    ControlCommand::Ls(reply) => {
-                        let _ = reply.send(Vec::new());
-                    }
-                    ControlCommand::GetPeers(_, reply) => {
-                        let _ = reply.send(Vec::new());
-                    }
-                }
-            }
-        }
-
-        if !self.cancel_rx.is_terminated() {
-            self.cancel_rx.close();
-            while self.cancel_rx.next().await.is_some() {
-                // just drain
-            }
-        }
-
-        self.drop_all_peers();
-        self.drop_all_my_topics();
-        self.drop_all_topics();
-
-        result
-    }
-
-    async fn next(&mut self) -> Result<()> {
-        loop {
-            select! {
-                cmd = self.peer_rx.next() => {
-                    self.handle_peer_event(cmd).await;
-                }
-                rpc = self.incoming_rx.next() => {
-                    self.handle_incoming_rpc(rpc).await?;
-                }
-                cmd = self.control_rx.next() => {
-                    self.on_control_command(cmd).await?;
-                }
-                sub = self.cancel_rx.next() => {
-                    self.un_subscribe(sub).await?;
-                }
-            }
-        }
-    }
-
-    // Always wait to send message.
-    async fn handle_sending_message(&mut self, rpid: PeerId, mut writer: Substream) {
-        let (mut tx, mut rx) = mpsc::unbounded();
-
-        let _ = tx.send(self.get_hello_packet()).await;
-
-        self.peers.insert(rpid.clone(), tx);
-
-        task::spawn(async move {
-            loop {
-                match rx.next().await {
-                    Some(rpc) => {
-                        log::trace!("send rpc msg: {:?}", rpc);
-                        // if failed, should reset?
-                        let _ = writer.write_one(rpc.into_bytes().as_slice()).await;
-                    }
-                    None => return,
-                }
-            }
-        });
-    }
-
-    // If remote peer is dead, remove it from peers and topics.
-    async fn handle_remove_dead_peer(&mut self, rpid: PeerId) {
-        let tx = self.peers.remove(&rpid);
-        match tx {
-            Some(mut tx) => {
-                let _ = tx.close().await;
-            }
-            None => return,
-        }
-
-        for ps in self.topics.values_mut() {
-            ps.remove(&rpid);
-        }
-    }
-
-    // Check if stream / connection is closed.
-    async fn handle_peer_eof(&mut self, rpid: PeerId, mut reader: Substream) {
-        let mut peer_dead_tx = self.peer_tx.clone();
-        task::spawn(async move {
-            loop {
-                if reader.read_one(2048).await.is_err() {
-                    let _ = peer_dead_tx.send(PeerEvent::DeadPeer(rpid.clone())).await;
-                    return;
-                }
-            }
-        });
-    }
-
-    // Handle when new peer connect.
-    async fn handle_new_peer(&mut self, pid: PeerId) {
-        let stream = self.control.as_mut().unwrap().new_stream(pid.clone(), vec![FLOOD_SUB_ID]).await;
-
-        // if new stream failed, ignore it Since some peer don's support floodsub protocol
-        if let Ok(stream) = stream {
-            let writer = stream.clone();
-
-            log::trace!("open stream to {}", pid);
-
-            self.handle_sending_message(pid.clone(), writer).await;
-            self.handle_peer_eof(pid.clone(), stream).await;
-        }
-    }
-
-    // Handle peer event, include new peer event and peer dead event
-    async fn handle_peer_event(&mut self, cmd: Option<PeerEvent>) {
-        match cmd {
-            Some(PeerEvent::NewPeer(rpid)) => {
-                self.handle_new_peer(rpid).await;
-            }
-            Some(PeerEvent::DeadPeer(rpid)) => {
-                self.handle_remove_dead_peer(rpid).await;
-            }
-            None => {}
-        }
-    }
-
-    // Check if I subscribe these topics.
-    fn subscribed_to_msg(&self, msg: FloodsubMessage) -> bool {
-        if self.my_topics.is_empty() {
-            return false;
-        }
-
-        for topic in msg.topics {
-            if self.my_topics.contains_key(&topic) {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    // Send message to all local subscribers of these topic.
-    async fn notify_subs(&mut self, from: PeerId, msg: FloodsubMessage) -> Result<()> {
-        if !self.config.subscribe_local_messages && self.config.local_peer_id == from {
-            return Ok(());
-        }
-
-        for topic in &msg.topics {
-            let subs = self.my_topics.get_mut(topic);
-            if let Some(subs) = subs {
-                for sender in subs.values_mut() {
-                    sender.send(msg.clone()).await.or(Err(FloodsubError::Closed))?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    // Publish message to all remote subscriber of topics.
-    async fn publish(&mut self, from: PeerId, msg: FloodsubMessage) -> Result<()> {
-        let mut to_send = Vec::new();
-        for topic in &msg.topics {
-            let subs = self.topics.get(topic);
-            if let Some(subs) = subs {
-                for pid in subs.keys() {
-                    to_send.push(pid.clone());
-                }
-            }
-        }
-
-        let rpc = FloodsubRpc {
-            messages: vec![msg.clone()],
-            subscriptions: vec![],
-        };
-
-        for pid in to_send {
-            if pid == from || pid == msg.source {
-                continue;
-            }
-
-            let sender = self.peers.get_mut(&pid);
-            if let Some(sender) = sender {
-                sender.send(rpc.clone()).await.or(Err(FloodsubError::Closed))?;
-            }
-        }
-
-        Ok(())
-    }
-
-    // Publish message to all subscriber include local and remote.
-    async fn publish_message(&mut self, from: PeerId, msg: FloodsubMessage) -> Result<()> {
-        // TODO: reject unsigned messages when strict before we even process the id
-
-        self.notify_subs(from.clone(), msg.clone()).await?;
-        self.publish(from, msg).await
-    }
-
-    // Handle incoming rpc message received by Handler.
-    async fn handle_incoming_rpc(&mut self, rpc: Option<RPC>) -> Result<()> {
-        match rpc {
-            Some(rpc) => {
-                log::trace!("recv rpc {:?}", rpc);
-
-                let from = rpc.from.clone();
-                for sub in rpc.rpc.subscriptions {
-                    match sub.action {
-                        FloodsubSubscriptionAction::Subscribe => {
-                            log::trace!("handle topic {:?}", sub.topic.clone());
-                            let subs = self.topics.entry(sub.topic.clone()).or_insert_with(HashMap::<PeerId, ()>::default);
-                            subs.insert(from.clone(), ());
-                        }
-                        FloodsubSubscriptionAction::Unsubscribe => {
-                            let subs = self.topics.get_mut(&sub.topic.clone());
-                            if let Some(subs) = subs {
-                                subs.remove(&from);
-                            }
-                        }
-                    }
-                }
-
-                for msg in rpc.rpc.messages {
-                    if !self.subscribed_to_msg(msg.clone()) {
-                        log::trace!("received message we didn't subscribe to. Dropping.");
-                        continue;
-                    }
-
-                    self.publish_message(from.clone(), msg.clone()).await?;
-                }
-
-                Ok(())
-            }
-            None => Err(FloodsubError::Closed),
-        }
-    }
-
-    // Announce my new subscribed topic to all connected peer.
-    async fn announce(&mut self, topic: Topic, sub: FloodsubSubscriptionAction) -> Result<()> {
-        let rpc = FloodsubRpc {
-            messages: vec![],
-            subscriptions: vec![FloodsubSubscription { action: sub, topic }],
-        };
-
-        for sender in self.peers.values_mut() {
-            sender.send(rpc.clone()).await.or(Err(FloodsubError::Closed))?;
-        }
-
-        Ok(())
-    }
-
-    // Process publish or subscribe command.
-    async fn on_control_command(&mut self, cmd: Option<ControlCommand>) -> Result<()> {
-        match cmd {
-            Some(ControlCommand::Publish(msg, reply)) => {
-                let lpid = self.config.local_peer_id.clone();
-                self.publish_message(lpid, msg).await?;
-
-                let _ = reply.send(());
-            }
-            Some(ControlCommand::Subscribe(topic, reply)) => {
-                let sub = self.subscribe(topic).await?;
-                let _ = reply.send(Some(sub));
-            }
-            Some(ControlCommand::Ls(reply)) => {
-                let mut topics = Vec::new();
-                for t in self.my_topics.keys() {
-                    topics.push(t.clone());
-                }
-                let _ = reply.send(topics);
-            }
-            Some(ControlCommand::GetPeers(topic, reply)) => {
-                let mut peers = Vec::new();
-                if topic.is_empty() {
-                    for pid in self.peers.keys() {
-                        peers.push(pid.clone());
-                    }
-                } else {
-                    let subs = self.topics.get(&topic);
-                    if let Some(subs) = subs {
-                        for pid in subs.keys() {
-                            peers.push(pid.clone());
-                        }
-                    }
-                }
-                let _ = reply.send(peers);
-            }
-            None => {}
-        }
-
-        Ok(())
-    }
-
-}
 
 
 /*

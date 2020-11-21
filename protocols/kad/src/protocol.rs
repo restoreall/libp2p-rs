@@ -26,28 +26,29 @@
 //! to poll the underlying transport for incoming messages, and the `Sink` component
 //! is used to send messages to remote peers.
 
-use std::{borrow::Cow, convert::TryFrom, time::Duration, time::Instant};
+use std::{convert::TryFrom, time::Duration, time::Instant};
 use std::io;
+use std::error::Error;
 use unsigned_varint::codec;
 use bytes::BytesMut;
 use codec::UviBytes;
 use prost::Message;
 use futures::prelude::*;
+use futures::channel::{mpsc, oneshot};
 use futures_codec::Framed;
 use async_trait::async_trait;
 use async_std::task;
 
+use libp2prs_traits::{ReadEx, WriteEx};
 use libp2prs_core::{Multiaddr, PeerId};
 use libp2prs_core::upgrade::UpgradeInfo;
 use libp2prs_swarm::protocol_handler::{ProtocolHandler, Notifiee, IProtocolHandler};
 use libp2prs_swarm::connection::Connection;
-use libp2prs_traits::{ReadEx, WriteEx};
-
-use crate::dht_proto as proto;
-use crate::record::{self, Record};
 use libp2prs_swarm::substream::Substream;
-use std::error::Error;
 
+use crate::{dht_proto as proto, KadError};
+use crate::record::{self, Record};
+use futures::SinkExt;
 
 /// The protocol name used for negotiating with multistream-select.
 pub const DEFAULT_PROTO_NAME: &[u8] = b"/ipfs/kad/1.0.0";
@@ -148,6 +149,8 @@ impl Into<proto::message::Peer> for KadPeer {
 
 type ProtocolId = &'static [u8];
 
+
+
 /// Configuration for a Kademlia connection upgrade. When applied to a connection, turns this
 /// connection into a `Stream + Sink` whose items are of type `KadRequestMsg` and `KadResponseMsg`.
 // TODO: if, as suspected, we can confirm with Protocol Labs that each open Kademlia substream does
@@ -158,9 +161,26 @@ pub struct KadProtocolHandler {
     protocol_name: ProtocolId,
     /// Maximum allowed size of a packet.
     max_packet_size: usize,
+    /// If false, we deny incoming requests.
+    allow_listening: bool,
+    /// Time after which we close an idle connection.
+    idle_timeout: Duration,
+
+    message_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>,
 }
 
 impl KadProtocolHandler {
+    /// Make a new KadProtocolHandler.
+    pub fn new (message_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
+        KadProtocolHandler {
+            protocol_name: DEFAULT_PROTO_NAME,
+            max_packet_size: DEFAULT_MAX_PACKET_SIZE,
+            allow_listening: false,
+            idle_timeout: Duration::from_secs(10),
+            message_tx,
+        }
+    }
+
     /// Returns the configured protocol name.
     pub fn protocol_name(&self) -> &[u8] {
         &self.protocol_name
@@ -172,15 +192,14 @@ impl KadProtocolHandler {
     }
 }
 
-impl Default for KadProtocolHandler {
-    fn default() -> Self {
-        KadProtocolHandler {
-            protocol_name: DEFAULT_PROTO_NAME,
-            max_packet_size: DEFAULT_MAX_PACKET_SIZE,
-        }
-    }
-}
-
+// impl Default for KadProtocolHandler {
+//     fn default() -> Self {
+//         KadProtocolHandler::new {
+//
+//         }
+//     }
+// }
+//
 impl UpgradeInfo for KadProtocolHandler {
     type Info = ProtocolId;
 
@@ -192,8 +211,16 @@ impl UpgradeInfo for KadProtocolHandler {
 impl Notifiee for KadProtocolHandler {
     fn connected(&mut self, conn: &mut Connection) {
         let peer_id = conn.remote_peer();
+        let mut tx = self.message_tx.clone();
         task::spawn(async move {
-            //let _ = new_peers.send(PeerEvent::NewPeer(peer_id)).await;
+            let _ = tx.send(ProtocolEvent::Connected(peer_id)).await;
+        });
+    }
+    fn disconnected(&mut self, conn: &mut Connection) {
+        let peer_id = conn.remote_peer();
+        let mut tx = self.message_tx.clone();
+        task::spawn(async move {
+            let _ = tx.send(ProtocolEvent::Disconnected(peer_id)).await;
         });
     }
 }
@@ -693,4 +720,211 @@ mod tests {
             bg_thread.join().unwrap();
         }
     }*/
+}
+
+
+
+/// Unique identifier for a request. Must be passed back in order to answer a request from
+/// the remote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KademliaRequestId {
+    /// Unique identifier for an incoming connection.
+    connec_unique_id: UniqueConnecId,
+}
+
+/// Unique identifier for a connection.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct UniqueConnecId(u64);
+
+
+/// Event produced by the Kademlia handler.
+#[derive(Debug)]
+pub enum ProtocolEvent<TUserData> {
+    /// A new connection from peer_id is opened.
+    ///
+    /// This notification comes from Protocol Notifiee trait.
+    Connected(PeerId),
+    /// A connection from peer_id is closed.
+    ///
+    /// This notification comes from Protocol Notifiee trait.
+    Disconnected(PeerId),
+    /// The configured protocol name has been confirmed by the peer through
+    /// a successfully negotiated substream.
+    ///
+    /// This event is only emitted once by a handler upon the first
+    /// successfully negotiated inbound or outbound substream and
+    /// indicates that the connected peer participates in the Kademlia
+    /// overlay network identified by the configured protocol name.
+    // TODO: ConnectedPoint
+    ProtocolConfirmed { endpoint: u32/*ConnectedPoint*/ },
+
+    /// Request for the list of nodes whose IDs are the closest to `key`. The number of nodes
+    /// returned is not specified, but should be around 20.
+    FindNodeReq {
+        /// The key for which to locate the closest nodes.
+        key: Vec<u8>,
+        /// Identifier of the request. Needs to be passed back when answering.
+        request_id: KademliaRequestId,
+    },
+
+    /// Response to an `KademliaHandlerIn::FindNodeReq`.
+    FindNodeRes {
+        /// Results of the request.
+        closer_peers: Vec<KadPeer>,
+        /// The user data passed to the `FindNodeReq`.
+        user_data: TUserData,
+    },
+
+    /// Same as `FindNodeReq`, but should also return the entries of the local providers list for
+    /// this key.
+    GetProvidersReq {
+        /// The key for which providers are requested.
+        key: record::Key,
+        /// Identifier of the request. Needs to be passed back when answering.
+        request_id: KademliaRequestId,
+    },
+
+    /// Response to an `KademliaHandlerIn::GetProvidersReq`.
+    GetProvidersRes {
+        /// Nodes closest to the key.
+        closer_peers: Vec<KadPeer>,
+        /// Known providers for this key.
+        provider_peers: Vec<KadPeer>,
+        /// The user data passed to the `GetProvidersReq`.
+        user_data: TUserData,
+    },
+
+    /// An error happened when performing a query.
+    QueryError {
+        /// The error that happened.
+        error: KadError,
+        /// The user data passed to the query.
+        user_data: TUserData,
+    },
+
+    /// The peer announced itself as a provider of a key.
+    AddProvider {
+        /// The key for which the peer is a provider of the associated value.
+        key: record::Key,
+        /// The peer that is the provider of the value for `key`.
+        provider: KadPeer,
+    },
+
+    /// Request to get a value from the dht records
+    GetRecord {
+        /// Key for which we should look in the dht
+        key: record::Key,
+        /// Identifier of the request. Needs to be passed back when answering.
+        request_id: KademliaRequestId,
+    },
+
+    /// Response to a `KademliaHandlerIn::GetRecord`.
+    GetRecordRes {
+        /// The result is present if the key has been found
+        record: Option<Record>,
+        /// Nodes closest to the key.
+        closer_peers: Vec<KadPeer>,
+        /// The user data passed to the `GetValue`.
+        user_data: TUserData,
+    },
+
+    /// Request to put a value in the dht records
+    PutRecord {
+        record: Record,
+        /// Identifier of the request. Needs to be passed back when answering.
+        request_id: KademliaRequestId,
+    },
+
+    /// Response to a request to store a record.
+    PutRecordRes {
+        /// The key of the stored record.
+        key: record::Key,
+        /// The value of the stored record.
+        value: Vec<u8>,
+        /// The user data passed to the `PutValue`.
+        user_data: TUserData,
+    }
+}
+
+
+/// Processes a Kademlia message that's expected to be a request from a remote.
+fn process_kad_request<TUserData>(
+    event: KadRequestMsg,
+    connec_unique_id: UniqueConnecId,
+) -> Result<ProtocolEvent<TUserData>, io::Error> {
+    match event {
+        KadRequestMsg::Ping => {
+            // TODO: implement; although in practice the PING message is never
+            //       used, so we may consider removing it altogether
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the PING Kademlia message is not implemented",
+            ))
+        }
+        KadRequestMsg::FindNode { key } => Ok(ProtocolEvent::FindNodeReq {
+            key,
+            request_id: KademliaRequestId { connec_unique_id },
+        }),
+        KadRequestMsg::GetProviders { key } => Ok(ProtocolEvent::GetProvidersReq {
+            key,
+            request_id: KademliaRequestId { connec_unique_id },
+        }),
+        KadRequestMsg::AddProvider { key, provider } => {
+            Ok(ProtocolEvent::AddProvider { key, provider })
+        }
+        KadRequestMsg::GetValue { key } => Ok(ProtocolEvent::GetRecord {
+            key,
+            request_id: KademliaRequestId { connec_unique_id },
+        }),
+        KadRequestMsg::PutValue { record } => Ok(ProtocolEvent::PutRecord {
+            record,
+            request_id: KademliaRequestId { connec_unique_id },
+        })
+    }
+}
+
+/// Process a Kademlia message that's supposed to be a response to one of our requests.
+fn process_kad_response<TUserData>(
+    event: KadResponseMsg,
+    user_data: TUserData,
+) -> ProtocolEvent<TUserData> {
+    // TODO: must check that the response corresponds to the request
+    match event {
+        KadResponseMsg::Pong => {
+            // We never send out pings.
+            ProtocolEvent::QueryError {
+                error: KadError::UnexpectedMessage,
+                user_data,
+            }
+        }
+        KadResponseMsg::FindNode { closer_peers } => {
+            ProtocolEvent::FindNodeRes {
+                closer_peers,
+                user_data,
+            }
+        },
+        KadResponseMsg::GetProviders {
+            closer_peers,
+            provider_peers,
+        } => ProtocolEvent::GetProvidersRes {
+            closer_peers,
+            provider_peers,
+            user_data,
+        },
+        KadResponseMsg::GetValue {
+            record,
+            closer_peers,
+        } => ProtocolEvent::GetRecordRes {
+            record,
+            closer_peers,
+            user_data,
+        },
+        KadResponseMsg::PutValue { key, value, .. } => {
+            ProtocolEvent::PutRecordRes {
+                key,
+                value,
+                user_data,
+            }
+        }
+    }
 }

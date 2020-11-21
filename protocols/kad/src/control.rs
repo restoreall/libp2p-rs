@@ -22,7 +22,30 @@ use futures::channel::{mpsc, oneshot};
 use futures::SinkExt;
 use libp2prs_core::{PeerId, Multiaddr};
 
-use crate::kad::ControlCommand;
+use crate::record;
+use crate::query::QueryId;
+
+pub(crate) enum ControlCommand {
+    /// Provide adds the given key to the content routing system.
+    /// It also announces it, otherwise it is just kept in the local
+    /// accounting of which objects are being provided.
+    Providing(record::Key, oneshot::Sender<()>),
+    // Lookup peers who are able to provide a given key.
+    //
+    // When count is 0, this method will return an unbounded number of
+    // results.
+    GetProviders(record::Key, oneshot::Sender<Option<QueryId>>),
+    // Searches for a peer with given ID, returns a peer.AddrInfo
+    // with relevant addresses.
+    FindPeer(PeerId, oneshot::Sender<Option<Vec<Multiaddr>>>),
+
+    // Adds value corresponding to given Key.
+    PutValue(record::Key, oneshot::Sender<()>),
+    // Searches value corresponding to given Key.
+    GetValue(record::Key, oneshot::Sender<()>),
+}
+
+
 
 #[derive(Clone)]
 pub struct Control {

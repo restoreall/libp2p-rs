@@ -114,7 +114,7 @@ impl<'a> RecordStore<'a> for MemoryStore {
 
     fn put(&'a mut self, r: Record) -> Result<()> {
         if r.value.len() >= self.config.max_value_bytes {
-            return Err(Error::ValueTooLarge)
+            return Err(KadError::ValueTooLarge)
         }
 
         let num_records = self.records.len();
@@ -125,7 +125,7 @@ impl<'a> RecordStore<'a> for MemoryStore {
             }
             hash_map::Entry::Vacant(e) => {
                 if num_records >= self.config.max_records {
-                    return Err(Error::MaxRecords)
+                    return Err(KadError::MaxRecords)
                 }
                 e.insert(r);
             }
@@ -150,7 +150,7 @@ impl<'a> RecordStore<'a> for MemoryStore {
             e@hash_map::Entry::Occupied(_) => e,
             e@hash_map::Entry::Vacant(_) => {
                 if self.config.max_provided_keys == num_keys {
-                    return Err(Error::MaxProvidedKeys)
+                    return Err(KadError::MaxProvidedKeys)
                 }
                 e
             }

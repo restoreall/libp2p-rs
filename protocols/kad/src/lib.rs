@@ -110,3 +110,25 @@ pub const K_VALUE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(20) };
 ///
 /// The current value is `3`.
 pub const ALPHA_VALUE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(3) };
+
+/// The possible errors of Kademlia.
+#[derive(Debug)]
+pub enum KadError {
+    /// The store is at capacity w.r.t. the total number of stored records.
+    MaxRecords,
+    /// The store is at capacity w.r.t. the total number of stored keys for
+    /// provider records.
+    MaxProvidedKeys,
+    /// The value of a record to be stored is too large.
+    ValueTooLarge,
+    /// An operation failed to due no known peers in the routing table.
+    NoKnownPeers,
+    /// Error while trying to perform the upgrade.
+    Upgrade,
+    /// Received an answer that doesn't correspond to the request.
+    UnexpectedMessage,
+    /// I/O error in the substream.
+    Io(std::io::Error),
+    /// Kademliad is Closed
+    Closed(u32)
+}
