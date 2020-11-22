@@ -227,8 +227,27 @@ impl Notifiee for KadProtocolHandler {
 
 #[async_trait]
 impl ProtocolHandler for KadProtocolHandler {
-    async fn handle(&mut self, stream: Substream, _info: <Self as UpgradeInfo>::Info) -> Result<(), Box<dyn Error>> {
-        unimplemented!()
+    async fn handle(&mut self, mut stream: Substream, _info: <Self as UpgradeInfo>::Info) -> Result<(), Box<dyn Error>> {
+        let source = stream.remote_peer();
+        log::trace!("Kad Handler receive packet from {}", source);
+        loop {
+            let packet = stream.read_one(self.max_packet_size).await?;
+            let request = proto::Message::decode(packet)?;
+            log::trace!("Kad handler recv : {:?}", request);
+
+            let (tx, rx) = oneshot::channel();
+
+            let evt = ProtocolEvent::KadRequest {request, source: source.clone(), reply: tx };
+            self.message_tx.send(evt).await?;
+            let response = rx.await?;
+
+            // handle response messages
+            let proto_struct = resp_msg_to_proto(response);
+            let mut buf = Vec::with_capacity(proto_struct.encoded_len());
+            proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
+
+            let _= stream.write2(&buf).await?;
+        }
     }
 
     fn box_clone(&self) -> IProtocolHandler {
@@ -723,20 +742,6 @@ mod tests {
 }
 
 
-
-/// Unique identifier for a request. Must be passed back in order to answer a request from
-/// the remote.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KademliaRequestId {
-    /// Unique identifier for an incoming connection.
-    connec_unique_id: UniqueConnecId,
-}
-
-/// Unique identifier for a connection.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct UniqueConnecId(u64);
-
-
 /// Event produced by the Kademlia handler.
 #[derive(Debug)]
 pub enum ProtocolEvent<TUserData> {
@@ -758,13 +763,15 @@ pub enum ProtocolEvent<TUserData> {
     // TODO: ConnectedPoint
     ProtocolConfirmed { endpoint: u32/*ConnectedPoint*/ },
 
-    /// Request for the list of nodes whose IDs are the closest to `key`. The number of nodes
-    /// returned is not specified, but should be around 20.
-    FindNodeReq {
-        /// The key for which to locate the closest nodes.
-        key: Vec<u8>,
-        /// Identifier of the request. Needs to be passed back when answering.
-        request_id: KademliaRequestId,
+    /// Kad request message from remote peer.
+    ///
+    KadRequest {
+        /// Request message, decoded from ProtoBuf
+        request: KadRequestMsg,
+        /// Source of the message, which is the Peer Id of the remote.
+        source: PeerId,
+        /// Reply oneshot channel.
+        reply: oneshot::Sender<KadResponseMsg>
     },
 
     /// Response to an `KademliaHandlerIn::FindNodeReq`.
@@ -773,15 +780,6 @@ pub enum ProtocolEvent<TUserData> {
         closer_peers: Vec<KadPeer>,
         /// The user data passed to the `FindNodeReq`.
         user_data: TUserData,
-    },
-
-    /// Same as `FindNodeReq`, but should also return the entries of the local providers list for
-    /// this key.
-    GetProvidersReq {
-        /// The key for which providers are requested.
-        key: record::Key,
-        /// Identifier of the request. Needs to be passed back when answering.
-        request_id: KademliaRequestId,
     },
 
     /// Response to an `KademliaHandlerIn::GetProvidersReq`.
@@ -802,22 +800,6 @@ pub enum ProtocolEvent<TUserData> {
         user_data: TUserData,
     },
 
-    /// The peer announced itself as a provider of a key.
-    AddProvider {
-        /// The key for which the peer is a provider of the associated value.
-        key: record::Key,
-        /// The peer that is the provider of the value for `key`.
-        provider: KadPeer,
-    },
-
-    /// Request to get a value from the dht records
-    GetRecord {
-        /// Key for which we should look in the dht
-        key: record::Key,
-        /// Identifier of the request. Needs to be passed back when answering.
-        request_id: KademliaRequestId,
-    },
-
     /// Response to a `KademliaHandlerIn::GetRecord`.
     GetRecordRes {
         /// The result is present if the key has been found
@@ -826,13 +808,6 @@ pub enum ProtocolEvent<TUserData> {
         closer_peers: Vec<KadPeer>,
         /// The user data passed to the `GetValue`.
         user_data: TUserData,
-    },
-
-    /// Request to put a value in the dht records
-    PutRecord {
-        record: Record,
-        /// Identifier of the request. Needs to be passed back when answering.
-        request_id: KademliaRequestId,
     },
 
     /// Response to a request to store a record.
@@ -893,7 +868,7 @@ fn process_kad_response<TUserData>(
         KadResponseMsg::Pong => {
             // We never send out pings.
             ProtocolEvent::QueryError {
-                error: KadError::UnexpectedMessage,
+                error: KadError::UnexpectedMessage("We never send out pings"),
                 user_data,
             }
         }

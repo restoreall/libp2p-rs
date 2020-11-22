@@ -126,7 +126,9 @@ pub enum KadError {
     /// Error while trying to perform the upgrade.
     Upgrade,
     /// Received an answer that doesn't correspond to the request.
-    UnexpectedMessage,
+    UnexpectedMessage(&'static str),
+    /// Received an request that is not supported yet.
+    Unsupported(&'static str),
     /// I/O error in the substream.
     Io(std::io::Error),
     /// Kademliad is Closed

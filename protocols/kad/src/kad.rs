@@ -38,7 +38,7 @@ use libp2prs_swarm::substream::Substream;
 use libp2prs_swarm::Control as SwarmControl;
 use libp2prs_traits::{ReadEx, WriteEx};
 
-use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent};
+use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType};
 use crate::control::{Control, ControlCommand};
 
 use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats};
@@ -1505,7 +1505,7 @@ impl<TStore> Kademlia<TStore>
                 //     self.handle_peer_event(cmd).await;
                 // }
                 evt = self.incoming_rx.next() => {
-                    self.handle_incoming_message(evt).await?;
+                    self.handle_events(evt).await?;
                 }
                 cmd = self.control_rx.next() => {
                     self.on_control_command(cmd).await?;
@@ -1579,8 +1579,8 @@ impl<TStore> Kademlia<TStore>
         // }
     }
 
-    // Handle incoming Kad messages received by protocol handler.
-    async fn handle_incoming_message(&mut self, msg: Option<ProtocolEvent<u32>>) -> Result<()> {
+    // Handle Kad events sent from protocol handler.
+    async fn handle_events(&mut self, msg: Option<ProtocolEvent<u32>>) -> Result<()> {
         match msg {
             Some(ProtocolEvent::Connected(peer_id)) => {
                 //self.handle_add_new_peer(peer_id).await;
@@ -1590,8 +1590,12 @@ impl<TStore> Kademlia<TStore>
                 //self.handle_remove_dead_peer(peer_id).await;
                 Ok(())
             }
-            Some(ProtocolEvent::AddProvider { key, provider }) => {
-                Ok(())
+            Some(ProtocolEvent::KadRequest {
+                request,
+                source,
+                reply
+            }) => {
+                let _= handle_kad_request(request, source, reply).await?;
             }
             Some(ProtocolEvent::FindNodeReq { key, request_id }) => {
                 Ok(())
@@ -1601,6 +1605,65 @@ impl<TStore> Kademlia<TStore>
             }
             None => Err(KadError::Closed(1)),
         }
+    }
+
+    // Handles Kad request messages. ProtoBuf message decoded by handler.
+    async fn handle_kad_request(&mut self, request: KadRequestMsg, source: PeerId, reply: oneshot::Sender<KadResponseMsg>) -> Result<()> {
+        let response = match request {
+            KadRequestMsg::Ping => {
+                // TODO: implement; although in practice the PING message is never
+                //       used, so we may consider removing it altogether
+                Err(KadError("the PING Kademlia message is not implemented"))
+            }
+            KadRequestMsg::FindNode { key } => {
+                let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
+                KadResponseMsg::FindNode {
+                    closer_peers
+                }
+            }
+            KadRequestMsg::AddProvider { key, provider } => {
+                // Only accept a provider record from a legitimate peer.
+                if provider.node_id != source {
+                    return
+                }
+                // TODO
+            }
+            KadRequestMsg::GetProviders { key } => {
+                let provider_peers = self.provider_peers(&key, &source);
+                let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
+                KadResponseMsg::GetProviders {
+                        closer_peers,
+                        provider_peers,
+                }
+
+            }
+            KadRequestMsg::GetValue { key } => {
+                // Lookup the record locally.
+                let record = match self.store.get(&key) {
+                    Some(record) => {
+                        if record.is_expired(Instant::now()) {
+                            self.store.remove(&key);
+                            None
+                        } else {
+                            Some(record.into_owned())
+                        }
+                    },
+                    None => None
+                };
+
+                let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
+
+                KadResponseMsg::GetValue {
+                        record,
+                        closer_peers,
+                }
+            }
+            KadRequestMsg::PutValue { record } => {
+                self.record_received(source, connection, request_id, record);
+            }
+        };
+
+        reply.send(response).await
     }
 
     // Process publish or subscribe command.
