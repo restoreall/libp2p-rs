@@ -49,6 +49,7 @@ use libp2prs_swarm::substream::Substream;
 use crate::{dht_proto as proto, KadError};
 use crate::record::{self, Record};
 use futures::SinkExt;
+use crate::protocol::ProtocolEvent::KadRequest;
 
 /// The protocol name used for negotiating with multistream-select.
 pub const DEFAULT_PROTO_NAME: &[u8] = b"/ipfs/kad/1.0.0";
@@ -232,21 +233,25 @@ impl ProtocolHandler for KadProtocolHandler {
         log::trace!("Kad Handler receive packet from {}", source);
         loop {
             let packet = stream.read_one(self.max_packet_size).await?;
-            let request = proto::Message::decode(packet)?;
+            let request = proto::Message::decode(&packet[..])?;
             log::trace!("Kad handler recv : {:?}", request);
 
+            let request = proto_to_req_msg(request)?;
+
+            // For AddProvider request, KadResponse is not needed
             let (tx, rx) = oneshot::channel();
-
-            let evt = ProtocolEvent::KadRequest {request, source: source.clone(), reply: tx };
+            let evt = ProtocolEvent::KadRequest { request, source: source.clone(), reply: tx };
             self.message_tx.send(evt).await?;
-            let response = rx.await?;
+            let response = rx.await??;
 
-            // handle response messages
-            let proto_struct = resp_msg_to_proto(response);
-            let mut buf = Vec::with_capacity(proto_struct.encoded_len());
-            proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
+            if let Some(response) = response {
+                // handle response messages
+                let proto_struct = resp_msg_to_proto(response);
+                let mut buf = Vec::with_capacity(proto_struct.encoded_len());
+                proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
 
-            let _= stream.write2(&buf).await?;
+                let _= stream.write2(&buf).await?;
+            }
         }
     }
 
@@ -771,7 +776,10 @@ pub enum ProtocolEvent<TUserData> {
         /// Source of the message, which is the Peer Id of the remote.
         source: PeerId,
         /// Reply oneshot channel.
-        reply: oneshot::Sender<KadResponseMsg>
+        ///
+        /// Note that AddProvider doesn't require response. This is why
+        /// KadResponseMsg is wrapped by Option<T>
+        reply: oneshot::Sender<Result<Option<KadResponseMsg>, KadError>>
     },
 
     /// Response to an `KademliaHandlerIn::FindNodeReq`.

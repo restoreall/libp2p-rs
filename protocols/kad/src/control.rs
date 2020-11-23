@@ -26,22 +26,24 @@ use crate::record;
 use crate::query::QueryId;
 
 pub(crate) enum ControlCommand {
+    /// Lookups the closer peers with given ID, returns a list of peer info
+    /// with relevant addresses.
+    Lookup(record::Key, oneshot::Sender<Option<Vec<Multiaddr>>>),
+    /// Searches for a peer with given ID, returns a list of peer info
+    /// with relevant addresses.
+    FindPeer(PeerId, oneshot::Sender<Option<Vec<Multiaddr>>>),
+    /// Lookup peers who are able to provide a given key.
+    ///
+    /// When count is 0, this method will return an unbounded number of
+    /// results.
+    FindProviders(record::Key, oneshot::Sender<Option<QueryId>>),
     /// Provide adds the given key to the content routing system.
     /// It also announces it, otherwise it is just kept in the local
     /// accounting of which objects are being provided.
     Providing(record::Key, oneshot::Sender<()>),
-    // Lookup peers who are able to provide a given key.
-    //
-    // When count is 0, this method will return an unbounded number of
-    // results.
-    GetProviders(record::Key, oneshot::Sender<Option<QueryId>>),
-    // Searches for a peer with given ID, returns a peer.AddrInfo
-    // with relevant addresses.
-    FindPeer(PeerId, oneshot::Sender<Option<Vec<Multiaddr>>>),
-
-    // Adds value corresponding to given Key.
+    /// Adds value corresponding to given Key.
     PutValue(record::Key, oneshot::Sender<()>),
-    // Searches value corresponding to given Key.
+    /// Searches value corresponding to given Key.
     GetValue(record::Key, oneshot::Sender<()>),
 }
 
@@ -56,6 +58,16 @@ pub struct Control {
 impl Control {
     pub(crate) fn new(control_sender: mpsc::UnboundedSender<ControlCommand>) -> Self {
         Control { control_sender }
+    }
+
+    /// Lookup the closer peers with the given key.
+    pub async fn lookup(&mut self, key: record::Key) -> Option<Vec<Multiaddr>> {
+        let (tx, rx) = oneshot::channel();
+        self.control_sender
+            .send(ControlCommand::Lookup(key, tx))
+            .await
+            .expect("control send lookup");
+        rx.await.expect("lookup")
     }
 
     pub async fn find_peer(&mut self, peer_id: &PeerId) -> Option<Vec<Multiaddr>> {

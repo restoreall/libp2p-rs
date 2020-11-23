@@ -84,6 +84,9 @@ pub use addresses::Addresses;
 pub use record::{store, Record, ProviderRecord};
 
 use std::num::NonZeroUsize;
+use libp2prs_core::PeerId;
+use std::fmt;
+use std::error::Error;
 
 /// The `k` parameter of the Kademlia specification.
 ///
@@ -127,10 +130,32 @@ pub enum KadError {
     Upgrade,
     /// Received an answer that doesn't correspond to the request.
     UnexpectedMessage(&'static str),
+    /// Received a request from an invalid source.
+    InvalidSource(PeerId),
     /// Received an request that is not supported yet.
     Unsupported(&'static str),
     /// I/O error in the substream.
     Io(std::io::Error),
     /// Kademliad is Closed
     Closed(u32)
+}
+
+
+impl fmt::Display for KadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KadError::MaxRecords => write!(f, "Storage is at capaticy"),
+            _ => write!(f, "Kad error"),
+        }
+    }
+}
+
+impl Error for KadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            KadError::MaxRecords => None,
+            KadError::Io(err) => Some(err),
+            _ => None,
+        }
+    }
 }

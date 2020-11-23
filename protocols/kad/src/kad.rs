@@ -1320,24 +1320,13 @@ impl<TStore> Kademlia<TStore>
     fn record_received(
         &mut self,
         source: PeerId,
-        connection: ConnectionId,
-        request_id: KademliaRequestId,
         mut record: Record
-    ) {
+    ) -> Result<KadResponseMsg> {
         if record.publisher.as_ref() == Some(self.kbuckets.local_key().preimage()) {
             // If the (alleged) publisher is the local node, do nothing. The record of
             // the original publisher should never change as a result of replication
             // and the publisher is always assumed to have the "right" value.
-            self.queued_events.push_back(NetworkBehaviourAction::NotifyHandler {
-                peer_id: source,
-                handler: NotifyHandler::One(connection),
-                event: KademliaHandlerIn::PutRecordRes {
-                    key: record.key,
-                    value: record.value,
-                    request_id,
-                },
-            });
-            return
+            return Ok(KadResponseMsg::PutValue { key: record.key, value: record.value });
         }
 
         let now = Instant::now();
@@ -1381,13 +1370,7 @@ impl<TStore> Kademlia<TStore>
                 Ok(()) => log::debug!("Record stored: {:?}; {} bytes", record.key, record.value.len()),
                 Err(e) => {
                     log::info!("Record not stored: {:?}", e);
-                    self.queued_events.push_back(NetworkBehaviourAction::NotifyHandler {
-                        peer_id: source,
-                        handler: NotifyHandler::One(connection),
-                        event: KademliaHandlerIn::Reset(request_id)
-                    });
-
-                    return
+                    return Err(e);
                 }
             }
         }
@@ -1399,14 +1382,9 @@ impl<TStore> Kademlia<TStore>
         // closest nodes to the target. In addition returning
         // [`KademliaHandlerIn::PutRecordRes`] does not reveal any internal
         // information to a possibly malicious remote node.
-        self.queued_events.push_back(NetworkBehaviourAction::NotifyHandler {
-            peer_id: source,
-            handler: NotifyHandler::One(connection),
-            event: KademliaHandlerIn::PutRecordRes {
+        Ok(KadResponseMsg::PutValue {
                 key: record.key,
                 value: record.value,
-                request_id,
-            },
         })
     }
 
@@ -1595,7 +1573,7 @@ impl<TStore> Kademlia<TStore>
                 source,
                 reply
             }) => {
-                let _= handle_kad_request(request, source, reply).await?;
+                let _ = self.handle_kad_request(request, source, reply).await?;
             }
             Some(ProtocolEvent::FindNodeReq { key, request_id }) => {
                 Ok(())
@@ -1608,33 +1586,36 @@ impl<TStore> Kademlia<TStore>
     }
 
     // Handles Kad request messages. ProtoBuf message decoded by handler.
-    async fn handle_kad_request(&mut self, request: KadRequestMsg, source: PeerId, reply: oneshot::Sender<KadResponseMsg>) -> Result<()> {
+    async fn handle_kad_request(&mut self, request: KadRequestMsg, source: PeerId, reply: oneshot::Sender<Result<Option<KadResponseMsg>>>) -> Result<()> {
         let response = match request {
             KadRequestMsg::Ping => {
-                // TODO: implement; although in practice the PING message is never
-                //       used, so we may consider removing it altogether
-                Err(KadError("the PING Kademlia message is not implemented"))
+                // respond with the request message
+                Ok(Some(KadResponseMsg::Pong))
             }
             KadRequestMsg::FindNode { key } => {
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
-                KadResponseMsg::FindNode {
+                Ok(KadResponseMsg::FindNode {
                     closer_peers
-                }
+                })
             }
             KadRequestMsg::AddProvider { key, provider } => {
                 // Only accept a provider record from a legitimate peer.
                 if provider.node_id != source {
-                    return
+                    log::info!("received provider from wrong peer {:?}", source);
+                    Err(KadError::InvalidSource(source))
+                } else {
+                    self.provider_received(key, provider);
+                    // AddProvider doesn't require a response
+                    Ok(None)
                 }
-                // TODO
             }
             KadRequestMsg::GetProviders { key } => {
                 let provider_peers = self.provider_peers(&key, &source);
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
-                KadResponseMsg::GetProviders {
+                Ok(KadResponseMsg::GetProviders {
                         closer_peers,
                         provider_peers,
-                }
+                })
 
             }
             KadRequestMsg::GetValue { key } => {
@@ -1652,14 +1633,13 @@ impl<TStore> Kademlia<TStore>
                 };
 
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
-
-                KadResponseMsg::GetValue {
+                Ok(KadResponseMsg::GetValue {
                         record,
                         closer_peers,
-                }
+                })
             }
             KadRequestMsg::PutValue { record } => {
-                self.record_received(source, connection, request_id, record);
+                self.record_received(source, record)
             }
         };
 
@@ -1669,14 +1649,18 @@ impl<TStore> Kademlia<TStore>
     // Process publish or subscribe command.
     async fn on_control_command(&mut self, cmd: Option<ControlCommand>) -> Result<()> {
         match cmd {
-            Some(ControlCommand::Providing(key, reply)) => {
-                let _ = reply.send(());
-            }
-            Some(ControlCommand::GetProviders(key, reply)) => {
+            Some(ControlCommand::Lookup(key, reply)) => {
+                self.get_closest_peers(key);
                 let _ = reply.send(None);
             }
             Some(ControlCommand::FindPeer(peer_id, reply)) => {
                 let _ = reply.send(None);
+            }
+            Some(ControlCommand::FindProviders(key, reply)) => {
+                let _ = reply.send(None);
+            }
+            Some(ControlCommand::Providing(key, reply)) => {
+                let _ = reply.send(());
             }
             Some(ControlCommand::PutValue(key, reply)) => {
                 let _ = reply.send(());
