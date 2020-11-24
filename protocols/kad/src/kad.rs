@@ -1514,19 +1514,18 @@ impl<TStore> Kademlia<TStore>
         // });
     }
 
-    // If remote peer is dead, remove it from peers and topics.
-    async fn handle_remove_dead_peer(&mut self, peer_id: PeerId) {
-        // let tx = self.peers.remove(&rpid);
-        // match tx {
-        //     Some(mut tx) => {
-        //         let _ = tx.close().await;
-        //     }
-        //     None => return,
-        // }
-        //
-        // for ps in self.topics.values_mut() {
-        //     ps.remove(&rpid);
-        // }
+    // Called when new peer is connected.
+    async fn handle_peer_connected(&mut self, peer_id: PeerId) {
+        // the peer id might have existed in the hashset, don't care too much
+        self.connected_peers.insert(peer_id);
+    }
+
+    // Called when a peer is disconnected.
+    async fn handle_peer_disconnected(&mut self, peer_id: PeerId) {
+        // remove the peer from the hashset
+        self.connected_peers.remove(&peer_id);
+        // TODO: figure out what it shall do
+        self.connection_updated(peer_id, None, NodeStatus::Disconnected);
     }
 
     // Check if stream / connection is closed.
@@ -1542,30 +1541,15 @@ impl<TStore> Kademlia<TStore>
         // });
     }
 
-    // Handle when new peer connect.
-    async fn handle_add_new_peer(&mut self, pid: PeerId) {
-        let stream = self.control.as_mut().unwrap().new_stream(pid.clone(), vec!["KAD_ID"]).await;
-
-        // if new stream failed, ignore it Since some peer don's support floodsub protocol
-        // if let Ok(stream) = stream {
-        //     let writer = stream.clone();
-        //
-        //     log::trace!("open stream to {}", pid);
-        //
-        //     self.handle_sending_message(pid.clone(), writer).await;
-        //     self.handle_peer_eof(pid.clone(), stream).await;
-        // }
-    }
-
     // Handle Kad events sent from protocol handler.
     async fn handle_events(&mut self, msg: Option<ProtocolEvent<u32>>) -> Result<()> {
         match msg {
-            Some(ProtocolEvent::Connected(peer_id)) => {
-                //self.handle_add_new_peer(peer_id).await;
+            Some(ProtocolEvent::PeerConnected(peer_id)) => {
+                self.handle_peer_connected(peer_id).await;
                 Ok(())
             }
-            Some(ProtocolEvent::Disconnected(peer_id)) => {
-                //self.handle_remove_dead_peer(peer_id).await;
+            Some(ProtocolEvent::PeerDisconnected(peer_id)) => {
+                self.handle_peer_disconnected(peer_id).await;
                 Ok(())
             }
             Some(ProtocolEvent::KadRequest {

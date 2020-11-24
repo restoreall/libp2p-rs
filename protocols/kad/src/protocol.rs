@@ -214,14 +214,14 @@ impl Notifiee for KadProtocolHandler {
         let peer_id = conn.remote_peer();
         let mut tx = self.message_tx.clone();
         task::spawn(async move {
-            let _ = tx.send(ProtocolEvent::Connected(peer_id)).await;
+            let _ = tx.send(ProtocolEvent::PeerConnected(peer_id)).await;
         });
     }
     fn disconnected(&mut self, conn: &mut Connection) {
         let peer_id = conn.remote_peer();
         let mut tx = self.message_tx.clone();
         task::spawn(async move {
-            let _ = tx.send(ProtocolEvent::Disconnected(peer_id)).await;
+            let _ = tx.send(ProtocolEvent::PeerDisconnected(peer_id)).await;
         });
     }
 }
@@ -753,11 +753,11 @@ pub enum ProtocolEvent<TUserData> {
     /// A new connection from peer_id is opened.
     ///
     /// This notification comes from Protocol Notifiee trait.
-    Connected(PeerId),
+    PeerConnected(PeerId),
     /// A connection from peer_id is closed.
     ///
     /// This notification comes from Protocol Notifiee trait.
-    Disconnected(PeerId),
+    PeerDisconnected(PeerId),
     /// The configured protocol name has been confirmed by the peer through
     /// a successfully negotiated substream.
     ///
