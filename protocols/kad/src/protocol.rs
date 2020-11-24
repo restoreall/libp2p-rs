@@ -36,6 +36,8 @@ use prost::Message;
 use futures::prelude::*;
 use futures::channel::{mpsc, oneshot};
 use futures_codec::Framed;
+use futures::SinkExt;
+
 use async_trait::async_trait;
 use async_std::task;
 
@@ -48,8 +50,6 @@ use libp2prs_swarm::substream::Substream;
 
 use crate::{dht_proto as proto, KadError};
 use crate::record::{self, Record};
-use futures::SinkExt;
-use crate::protocol::ProtocolEvent::KadRequest;
 
 /// The protocol name used for negotiating with multistream-select.
 pub const DEFAULT_PROTO_NAME: &[u8] = b"/ipfs/kad/1.0.0";
@@ -829,42 +829,6 @@ pub enum ProtocolEvent<TUserData> {
     }
 }
 
-
-/// Processes a Kademlia message that's expected to be a request from a remote.
-fn process_kad_request<TUserData>(
-    event: KadRequestMsg,
-    connec_unique_id: UniqueConnecId,
-) -> Result<ProtocolEvent<TUserData>, io::Error> {
-    match event {
-        KadRequestMsg::Ping => {
-            // TODO: implement; although in practice the PING message is never
-            //       used, so we may consider removing it altogether
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the PING Kademlia message is not implemented",
-            ))
-        }
-        KadRequestMsg::FindNode { key } => Ok(ProtocolEvent::FindNodeReq {
-            key,
-            request_id: KademliaRequestId { connec_unique_id },
-        }),
-        KadRequestMsg::GetProviders { key } => Ok(ProtocolEvent::GetProvidersReq {
-            key,
-            request_id: KademliaRequestId { connec_unique_id },
-        }),
-        KadRequestMsg::AddProvider { key, provider } => {
-            Ok(ProtocolEvent::AddProvider { key, provider })
-        }
-        KadRequestMsg::GetValue { key } => Ok(ProtocolEvent::GetRecord {
-            key,
-            request_id: KademliaRequestId { connec_unique_id },
-        }),
-        KadRequestMsg::PutValue { record } => Ok(ProtocolEvent::PutRecord {
-            record,
-            request_id: KademliaRequestId { connec_unique_id },
-        })
-    }
-}
 
 /// Process a Kademlia message that's supposed to be a response to one of our requests.
 fn process_kad_response<TUserData>(

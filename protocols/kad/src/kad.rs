@@ -85,8 +85,8 @@ pub struct Kademlia<TStore> {
     /// How long to keep connections alive when they're idle.
     connection_idle_timeout: Duration,
 
-    /// Queued events to return when the behaviour is being polled.
-    queued_events: VecDeque<NetworkBehaviourAction<KademliaHandlerIn<QueryId>, KademliaEvent>>,
+    // /// Queued events to return when the behaviour is being polled.
+    // queued_events: VecDeque<NetworkBehaviourAction<KademliaHandlerIn<QueryId>, KademliaEvent>>,
 
     /// The currently known addresses of the local node.
     local_addrs: HashSet<Multiaddr>,
@@ -302,15 +302,15 @@ impl KademliaConfig {
         self.connection_idle_timeout = duration;
         self
     }
-
-    /// Modifies the maximum allowed size of individual Kademlia packets.
-    ///
-    /// It might be necessary to increase this value if trying to put large
-    /// records.
-    pub fn set_max_packet_size(&mut self, size: usize) -> &mut Self {
-        self.protocol_config.set_max_packet_size(size);
-        self
-    }
+    //
+    // /// Modifies the maximum allowed size of individual Kademlia packets.
+    // ///
+    // /// It might be necessary to increase this value if trying to put large
+    // /// records.
+    // pub fn set_max_packet_size(&mut self, size: usize) -> &mut Self {
+    //     self.protocol_config.set_max_packet_size(size);
+    //     self
+    // }
 
     /// Sets the k-bucket insertion strategy for the Kademlia routing table.
     pub fn set_kbucket_inserts(&mut self, inserts: KademliaBucketInserts) -> &mut Self {
@@ -321,17 +321,17 @@ impl KademliaConfig {
 
 impl<TStore> Kademlia<TStore>
     where
-            for<'a> TStore: RecordStore<'a>
+            for<'a> TStore: RecordStore<'a> + Send + 'static
 {
     /// Creates a new `Kademlia` network behaviour with a default configuration.
     pub fn new(id: PeerId, store: TStore) -> Self {
         Self::with_config(id, store, Default::default())
     }
 
-    /// Get the protocol name of this kademlia instance.
-    pub fn protocol_name(&self) -> &[u8] {
-        self.protocol_config.protocol_name()
-    }
+    // /// Get the protocol name of this kademlia instance.
+    // pub fn protocol_name(&self) -> &[u8] {
+    //     self.protocol_config.protocol_name()
+    // }
 
     /// Creates a new `Kademlia` network behaviour with the given configuration.
     pub fn with_config(id: PeerId, store: TStore, config: KademliaConfig) -> Self {
@@ -363,7 +363,7 @@ impl<TStore> Kademlia<TStore>
             control_rx,
             kbuckets: KBucketsTable::new(local_key, config.kbucket_pending_timeout),
             kbucket_inserts: config.kbucket_inserts,
-            queued_events: VecDeque::with_capacity(config.query_config.replication_factor.get()),
+            //queued_events: VecDeque::with_capacity(config.query_config.replication_factor.get()),
             queries: QueryPool::new(config.query_config),
             connected_peers: Default::default(),
             add_provider_job,
@@ -637,7 +637,7 @@ impl<TStore> Kademlia<TStore>
             context,
             record,
             quorum,
-            phase: PutRecordPhase::GetClosestPeers
+            //phase: PutRecordPhase::GetClosestPeers
         };
         let inner = QueryInner::new(info);
         Ok(self.queries.add_iter_closest(target.clone(), peers, inner))
@@ -737,7 +737,11 @@ impl<TStore> Kademlia<TStore>
         let info = QueryInfo::AddProvider {
             context,
             key,
-            phase: AddProviderPhase::GetClosestPeers
+            //phase: AddProviderPhase::GetClosestPeers
+            // TODO
+            provider_id: PeerId::random(),
+            external_addresses: vec![],
+            get_closest_peers_stats: QueryStats::empty()
         };
         let inner = QueryInner::new(info);
         let id = self.queries.add_iter_closest(target.clone(), peers, inner);
@@ -853,7 +857,10 @@ impl<TStore> Kademlia<TStore>
         let info = QueryInfo::AddProvider {
             context,
             key: key.clone(),
-            phase: AddProviderPhase::GetClosestPeers
+            //phase: AddProviderPhase::GetClosestPeers
+            provider_id: PeerId::random(),
+            external_addresses: vec![],
+            get_closest_peers_stats: QueryStats::empty()
         };
         let target = kbucket::Key::new(key);
         let peers = self.kbuckets.closest_keys(&target);
@@ -867,7 +874,7 @@ impl<TStore> Kademlia<TStore>
         let target = kbucket::Key::new(record.key.clone());
         let peers = self.kbuckets.closest_keys(&target);
         let info = QueryInfo::PutRecord {
-            record, quorum, context, phase: PutRecordPhase::GetClosestPeers
+            record, quorum, context//, phase: PutRecordPhase::GetClosestPeers
         };
         let inner = QueryInner::new(info);
         self.queries.add_iter_closest(target.clone(), peers, inner);
@@ -880,13 +887,13 @@ impl<TStore> Kademlia<TStore>
             kbucket::Entry::Present(mut entry, old_status) => {
                 if let Some(address) = address {
                     if entry.value().insert(address) {
-                        self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                            KademliaEvent::RoutingUpdated {
-                                peer,
-                                addresses: entry.value().clone(),
-                                old_peer: None,
-                            }
-                        ))
+                        // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
+                        //     KademliaEvent::RoutingUpdated {
+                        //         peer,
+                        //         addresses: entry.value().clone(),
+                        //         old_peer: None,
+                        //     }
+                        // ))
                     }
                 }
                 if old_status != new_status {
@@ -910,14 +917,14 @@ impl<TStore> Kademlia<TStore>
                 }
                 match (address, self.kbucket_inserts) {
                     (None, _) => {
-                        self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                            KademliaEvent::UnroutablePeer { peer }
-                        ));
+                        // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
+                        //     KademliaEvent::UnroutablePeer { peer }
+                        // ));
                     }
                     (Some(a), KademliaBucketInserts::Manual) => {
-                        self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                            KademliaEvent::RoutablePeer { peer, address: a }
-                        ));
+                        // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
+                        //     KademliaEvent::RoutablePeer { peer, address: a }
+                        // ));
                     }
                     (Some(a), KademliaBucketInserts::OnConnected) => {
                         let addresses = Addresses::new(a);
@@ -928,26 +935,26 @@ impl<TStore> Kademlia<TStore>
                                     addresses,
                                     old_peer: None,
                                 };
-                                self.queued_events.push_back(
-                                    NetworkBehaviourAction::GenerateEvent(event));
+                                // self.queued_events.push_back(
+                                //     NetworkBehaviourAction::GenerateEvent(event));
                             },
                             kbucket::InsertResult::Full => {
                                 log::debug!("Bucket full. Peer not added to routing table: {}", peer);
                                 let address = addresses.first().clone();
-                                self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                                    KademliaEvent::RoutablePeer { peer, address }
-                                ));
+                                // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
+                                //     KademliaEvent::RoutablePeer { peer, address }
+                                // ));
                             },
                             kbucket::InsertResult::Pending { disconnected } => {
                                 debug_assert!(!self.connected_peers.contains(disconnected.preimage()));
                                 let address = addresses.first().clone();
-                                self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                                    KademliaEvent::PendingRoutablePeer { peer, address }
-                                ));
-                                self.queued_events.push_back(NetworkBehaviourAction::DialPeer {
-                                    peer_id: disconnected.into_preimage(),
-                                    condition: DialPeerCondition::Disconnected
-                                })
+                                // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
+                                //     KademliaEvent::PendingRoutablePeer { peer, address }
+                                // ));
+                                // self.queued_events.push_back(NetworkBehaviourAction::DialPeer {
+                                //     peer_id: disconnected.into_preimage(),
+                                //     condition: DialPeerCondition::Disconnected
+                                // })
                             },
                         }
                     }
@@ -958,7 +965,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     /// Handles a finished (i.e. successful) query.
-    fn query_finished(&mut self, q: Query<QueryInner>, params: &mut impl PollParameters)
+    fn query_finished(&mut self, q: Query<QueryInner>)
                       -> Option<KademliaEvent>
     {
         let query_id = q.id();
@@ -1045,30 +1052,28 @@ impl<TStore> Kademlia<TStore>
                 })
             }
 
-            QueryInfo::AddProvider {
-                context,
-                key,
-                phase: AddProviderPhase::GetClosestPeers
-            } => {
-                let provider_id = params.local_peer_id().clone();
-                let external_addresses = params.external_addresses().collect();
-                let inner = QueryInner::new(QueryInfo::AddProvider {
-                    context,
-                    key,
-                    phase: AddProviderPhase::AddProvider {
-                        provider_id,
-                        external_addresses,
-                        get_closest_peers_stats: result.stats
-                    }
-                });
-                self.queries.continue_fixed(query_id, result.peers, inner);
-                None
-            }
+            // QueryInfo::AddProvider {
+            //     context,
+            //     key,
+            //     phase: AddProviderPhase::GetClosestPeers
+            // } => {
+            //     let provider_id = params.local_peer_id().clone();
+            //     let external_addresses = params.external_addresses().collect();
+            //     let inner = QueryInner::new(QueryInfo::AddProvider {
+            //         context,
+            //         key,
+            //         phase: AddProviderPhase::AddProvider {
+            //             provider_id,
+            //             external_addresses,
+            //             get_closest_peers_stats: result.stats
+            //         }
+            //     });
+            //     self.queries.continue_fixed(query_id, result.peers, inner);
+            //     None
+            // }
 
             QueryInfo::AddProvider {
-                context,
-                key,
-                phase: AddProviderPhase::AddProvider { get_closest_peers_stats, .. }
+                key, provider_id, external_addresses, get_closest_peers_stats, context
             } => {
                 match context {
                     AddProviderContext::Publish => {
@@ -1100,10 +1105,10 @@ impl<TStore> Kademlia<TStore>
                             context,
                             record,
                             quorum,
-                            phase: PutRecordPhase::PutRecord {
-                                success: vec![],
-                                get_closest_peers_stats: QueryStats::empty()
-                            }
+                            // phase: PutRecordPhase::PutRecord {
+                            //     success: vec![],
+                            //     get_closest_peers_stats: QueryStats::empty()
+                            // }
                         };
                         let inner = QueryInner::new(info);
                         self.queries.add_fixed(std::iter::once(cache_key.into_preimage()), inner);
@@ -1124,50 +1129,52 @@ impl<TStore> Kademlia<TStore>
                 })
             }
 
-            QueryInfo::PutRecord {
-                context,
-                record,
-                quorum,
-                phase: PutRecordPhase::GetClosestPeers
-            } => {
-                let info = QueryInfo::PutRecord {
-                    context,
-                    record,
-                    quorum,
-                    phase: PutRecordPhase::PutRecord {
-                        success: vec![],
-                        get_closest_peers_stats: result.stats
-                    }
-                };
-                let inner = QueryInner::new(info);
-                self.queries.continue_fixed(query_id, result.peers, inner);
-                None
-            }
+            // QueryInfo::PutRecord {
+            //     context,
+            //     record,
+            //     quorum,
+            //     phase: PutRecordPhase::GetClosestPeers
+            // } => {
+            //     let info = QueryInfo::PutRecord {
+            //         context,
+            //         record,
+            //         quorum,
+            //         phase: PutRecordPhase::PutRecord {
+            //             success: vec![],
+            //             get_closest_peers_stats: result.stats
+            //         }
+            //     };
+            //     let inner = QueryInner::new(info);
+            //     self.queries.continue_fixed(query_id, result.peers, inner);
+            //     None
+            // }
 
             QueryInfo::PutRecord {
                 context,
                 record,
                 quorum,
-                phase: PutRecordPhase::PutRecord { success, get_closest_peers_stats }
             } => {
                 let mk_result = |key: record::Key| {
-                    if success.len() >= quorum.get() {
-                        Ok(PutRecordOk { key })
-                    } else {
-                        Err(PutRecordError::QuorumFailed { key, quorum, success })
-                    }
+                    Ok(PutRecordOk { key })
+                    // if success.len() >= quorum.get() {
+                    //     Ok(PutRecordOk { key })
+                    // } else {
+                    //     Err(PutRecordError::QuorumFailed { key, quorum, success })
+                    // }
                 };
                 match context {
                     PutRecordContext::Publish =>
                         Some(KademliaEvent::QueryResult {
                             id: query_id,
-                            stats: get_closest_peers_stats.merge(result.stats),
+                            //stats: get_closest_peers_stats.merge(result.stats),
+                            stats: result.stats,
                             result: QueryResult::PutRecord(mk_result(record.key))
                         }),
                     PutRecordContext::Republish =>
                         Some(KademliaEvent::QueryResult {
                             id: query_id,
-                            stats: get_closest_peers_stats.merge(result.stats),
+                            //stats: get_closest_peers_stats.merge(result.stats),
+                            stats: result.stats,
                             result: QueryResult::RepublishRecord(mk_result(record.key))
                         }),
                     PutRecordContext::Replicate => {
@@ -1247,14 +1254,15 @@ impl<TStore> Kademlia<TStore>
                 })
             },
 
-            QueryInfo::PutRecord { record, quorum, context, phase } => {
+            QueryInfo::PutRecord { record, quorum, context/*, phase*/ } => {
                 let err = Err(PutRecordError::Timeout {
                     key: record.key,
+                    success: vec![],
                     quorum,
-                    success: match phase {
-                        PutRecordPhase::GetClosestPeers => vec![],
-                        PutRecordPhase::PutRecord { ref success, .. } => success.clone(),
-                    }
+                    // success: match phase {
+                    //     PutRecordPhase::GetClosestPeers => vec![],
+                    //     PutRecordPhase::PutRecord { ref success, .. } => success.clone(),
+                    // }
                 });
                 match context {
                     PutRecordContext::Publish =>
@@ -1269,27 +1277,30 @@ impl<TStore> Kademlia<TStore>
                             stats: result.stats,
                             result: QueryResult::RepublishRecord(err)
                         }),
-                    PutRecordContext::Replicate => match phase {
-                        PutRecordPhase::GetClosestPeers => {
-                            log::warn!("Locating closest peers for replication failed: {:?}", err);
-                            None
-                        }
-                        PutRecordPhase::PutRecord { .. } => {
-                            log::debug!("Replicating record failed: {:?}", err);
-                            None
-                        }
+                    PutRecordContext::Replicate => {
+                        // PutRecordPhase::GetClosestPeers => {
+                        //     log::warn!("Locating closest peers for replication failed: {:?}", err);
+                        //     None
+                        // }
+                        // PutRecordPhase::PutRecord { .. } => {
+                        //     log::debug!("Replicating record failed: {:?}", err);
+                        //     None
+                        // }
+
+                        None
                     }
-                    PutRecordContext::Cache => match phase {
-                        PutRecordPhase::GetClosestPeers => {
-                            // Caching a record at the closest peer to a key that did not return
-                            // a record is never preceded by a lookup for the closest peers, i.e.
-                            // it is a direct query to a single peer.
-                            unreachable!()
-                        }
-                        PutRecordPhase::PutRecord { .. } => {
-                            log::debug!("Caching record failed: {:?}", err);
-                            None
-                        }
+                    PutRecordContext::Cache => {
+                        // PutRecordPhase::GetClosestPeers => {
+                        //     // Caching a record at the closest peer to a key that did not return
+                        //     // a record is never preceded by a lookup for the closest peers, i.e.
+                        //     // it is a direct query to a single peer.
+                        //     unreachable!()
+                        // }
+                        // PutRecordPhase::PutRecord { .. } => {
+                        //     log::debug!("Caching record failed: {:?}", err);
+                        //     None
+                        // }
+                        None
                     }
                 }
             }
@@ -1559,11 +1570,12 @@ impl<TStore> Kademlia<TStore>
                 source,
                 reply
             }) => {
-                let _ = self.handle_kad_request(request, source, reply).await?;
-            }
-            Some(ProtocolEvent::FindNodeReq { key, request_id }) => {
+                self.handle_kad_request(request, source, reply);
                 Ok(())
             }
+            // Some(ProtocolEvent::FindNodeReq { key, request_id }) => {
+            //     Ok(())
+            // }
             Some(_) => {
                 Ok(())
             }
@@ -1572,7 +1584,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     // Handles Kad request messages. ProtoBuf message decoded by handler.
-    async fn handle_kad_request(&mut self, request: KadRequestMsg, source: PeerId, reply: oneshot::Sender<Result<Option<KadResponseMsg>>>) -> Result<()> {
+    fn handle_kad_request(&mut self, request: KadRequestMsg, source: PeerId, reply: oneshot::Sender<Result<Option<KadResponseMsg>>>) {
         let response = match request {
             KadRequestMsg::Ping => {
                 // respond with the request message
@@ -1580,9 +1592,9 @@ impl<TStore> Kademlia<TStore>
             }
             KadRequestMsg::FindNode { key } => {
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
-                Ok(KadResponseMsg::FindNode {
+                Ok(Some(KadResponseMsg::FindNode {
                     closer_peers
-                })
+                }))
             }
             KadRequestMsg::AddProvider { key, provider } => {
                 // Only accept a provider record from a legitimate peer.
@@ -1598,10 +1610,10 @@ impl<TStore> Kademlia<TStore>
             KadRequestMsg::GetProviders { key } => {
                 let provider_peers = self.provider_peers(&key, &source);
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
-                Ok(KadResponseMsg::GetProviders {
+                Ok(Some(KadResponseMsg::GetProviders {
                         closer_peers,
                         provider_peers,
-                })
+                }))
 
             }
             KadRequestMsg::GetValue { key } => {
@@ -1619,17 +1631,17 @@ impl<TStore> Kademlia<TStore>
                 };
 
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
-                Ok(KadResponseMsg::GetValue {
+                Ok(Some(KadResponseMsg::GetValue {
                         record,
                         closer_peers,
-                })
+                }))
             }
             KadRequestMsg::PutValue { record } => {
-                self.record_received(source, record)
+                self.record_received(source, record).and_then(|r|Ok(Some(r)))
             }
         };
 
-        reply.send(response).await
+        let _ = reply.send(response);
     }
 
     // Process publish or subscribe command.
@@ -2042,11 +2054,11 @@ struct QueryInner {
     info: QueryInfo,
     /// Addresses of peers discovered during a query.
     addresses: FnvHashMap<PeerId, SmallVec<[Multiaddr; 8]>>,
-    /// A map of pending requests to peers.
-    ///
-    /// A request is pending if the targeted peer is not currently connected
-    /// and these requests are sent as soon as a connection to the peer is established.
-    pending_rpcs: SmallVec<[(PeerId, KademliaHandlerIn<QueryId>); K_VALUE.get()]>
+    // /// A map of pending requests to peers.
+    // ///
+    // /// A request is pending if the targeted peer is not currently connected
+    // /// and these requests are sent as soon as a connection to the peer is established.
+    // pending_rpcs: SmallVec<[(PeerId, KademliaHandlerIn<QueryId>); K_VALUE.get()]>
 }
 
 impl QueryInner {
@@ -2054,7 +2066,7 @@ impl QueryInner {
         QueryInner {
             info,
             addresses: Default::default(),
-            pending_rpcs: SmallVec::default()
+            //pending_rpcs: SmallVec::default()
         }
     }
 }
@@ -2106,8 +2118,12 @@ pub enum QueryInfo {
     AddProvider {
         /// The record key.
         key: record::Key,
-        /// The current phase of the query.
-        phase: AddProviderPhase,
+        /// The local peer ID that is advertised as a provider.
+        provider_id: PeerId,
+        /// The external addresses of the provider being advertised.
+        external_addresses: Vec<Multiaddr>,
+        /// Query statistics from the finished `GetClosestPeers` phase.
+        get_closest_peers_stats: QueryStats,
         /// The execution context of the query.
         context: AddProviderContext,
     },
@@ -2118,7 +2134,7 @@ pub enum QueryInfo {
         /// The expected quorum of responses w.r.t. the replication factor.
         quorum: NonZeroUsize,
         /// The current phase of the query.
-        phase: PutRecordPhase,
+        // TODO: phase: PutRecordPhase,
         /// The execution context of the query.
         context: PutRecordContext,
     },
@@ -2143,49 +2159,30 @@ pub enum QueryInfo {
 impl QueryInfo {
     /// Creates an event for a handler to issue an outgoing request in the
     /// context of a query.
-    fn to_request(&self, query_id: QueryId) -> KademliaHandlerIn<QueryId> {
+    fn to_request(&self, _query_id: QueryId) -> KadRequestMsg {
         match &self {
-            QueryInfo::Bootstrap { peer, .. } => KademliaHandlerIn::FindNodeReq {
+            QueryInfo::Bootstrap { peer, .. } => KadRequestMsg::FindNode {
                 key: peer.clone().into_bytes(),
-                user_data: query_id,
             },
-            QueryInfo::GetClosestPeers { key, .. } => KademliaHandlerIn::FindNodeReq {
+            QueryInfo::GetClosestPeers { key, .. } => KadRequestMsg::FindNode {
                 key: key.clone(),
-                user_data: query_id,
             },
-            QueryInfo::GetProviders { key, .. } => KademliaHandlerIn::GetProvidersReq {
+            QueryInfo::GetProviders { key, .. } => KadRequestMsg::GetProviders {
                 key: key.clone(),
-                user_data: query_id,
             },
-            QueryInfo::AddProvider { key, phase, .. } => match phase {
-                AddProviderPhase::GetClosestPeers => KademliaHandlerIn::FindNodeReq {
-                    key: key.to_vec(),
-                    user_data: query_id,
-                },
-                AddProviderPhase::AddProvider { provider_id, external_addresses, .. } => {
-                    KademliaHandlerIn::AddProvider {
-                        key: key.clone(),
-                        provider: crate::protocol::KadPeer {
-                            node_id: provider_id.clone(),
-                            multiaddrs: external_addresses.clone(),
-                            connection_ty: crate::protocol::KadConnectionType::Connected,
-                        }
-                    }
+            QueryInfo::AddProvider { key, provider_id, external_addresses, .. } => KadRequestMsg::AddProvider {
+                key: key.clone(),
+                provider: crate::protocol::KadPeer {
+                    node_id: provider_id.clone(),
+                    multiaddrs: external_addresses.clone(),
+                    connection_ty: crate::protocol::KadConnectionType::Connected,
                 }
             },
-            QueryInfo::GetRecord { key, .. } => KademliaHandlerIn::GetRecord {
+            QueryInfo::GetRecord { key, .. } => KadRequestMsg::GetValue {
                 key: key.clone(),
-                user_data: query_id,
             },
-            QueryInfo::PutRecord { record, phase, .. } => match phase {
-                PutRecordPhase::GetClosestPeers => KademliaHandlerIn::FindNodeReq {
-                    key: record.key.to_vec(),
-                    user_data: query_id,
-                },
-                PutRecordPhase::PutRecord { .. } => KademliaHandlerIn::PutRecord {
-                    record: record.clone(),
-                    user_data: query_id
-                }
+            QueryInfo::PutRecord { record, .. } => KadRequestMsg::PutValue {
+                record: record.clone(),
             }
         }
     }
