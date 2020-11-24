@@ -82,11 +82,13 @@ pub use addresses::Addresses;
 //pub use query::QueryId;
 //pub use protocol::KadConnectionType;
 pub use record::{store, Record, ProviderRecord};
+pub use kad::{BootstrapError, GetClosestPeersError, AddProviderError, GetProvidersError, PutRecordError, GetRecordError};
 
 use std::num::NonZeroUsize;
 use libp2prs_core::PeerId;
 use std::fmt;
 use std::error::Error;
+use std::collections::HashSet;
 
 /// The `k` parameter of the Kademlia specification.
 ///
@@ -128,6 +130,19 @@ pub enum KadError {
     NoKnownPeers,
     /// Error while trying to perform the upgrade.
     Upgrade,
+    /// Error while bootstrapping Kademlia-DHT.
+    Bootstrap(BootstrapError),
+    /// Error while looking up closest peers.
+    GetClosestPeers(GetClosestPeersError),
+    /// Error while finding providers.
+    GetProviders(GetProvidersError),
+    /// Error while providing.
+    AddProvider(AddProviderError),
+    /// Error while putting value.
+    PutRecord(PutRecordError),
+    /// Error while getting value.
+    GetRecord(GetRecordError),
+
     /// Received an answer that doesn't correspond to the request.
     UnexpectedMessage(&'static str),
     /// Received a request from an invalid source.

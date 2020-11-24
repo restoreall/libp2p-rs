@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use std::collections::{HashMap, VecDeque, HashSet};
 use std::num::NonZeroUsize;
 use std::borrow::Borrow;
-use fnv::FnvHashSet;
+use fnv::{FnvHashSet, FnvHashMap};
 
 use futures::stream::FusedStream;
 use futures::{
@@ -45,7 +45,9 @@ use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
-use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
+use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord, K_VALUE};
+use smallvec::SmallVec;
+use std::fmt;
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -1104,7 +1106,7 @@ impl<TStore> Kademlia<TStore>
                             }
                         };
                         let inner = QueryInner::new(info);
-                        self.queries.add_fixed(iter::once(cache_key.into_preimage()), inner);
+                        self.queries.add_fixed(std::iter::once(cache_key.into_preimage()), inner);
                     }
                     Ok(GetRecordOk { records })
                 } else if records.is_empty() {
@@ -1665,55 +1667,650 @@ fn exp_decrease(ttl: Duration, exp: u32) -> Duration {
 }
 
 
-/*
-pub struct Kad {
-    //config: FloodsubConfig,
 
-    // Used to open stream.
-    control: Option<SwarmControl>,
-
-    // New peer is connected or peer is dead.
-    peer_tx: mpsc::UnboundedSender<PeerEvent>,
-    peer_rx: mpsc::UnboundedReceiver<PeerEvent>,
-
-    // Used to recv incoming rpc message.
-    incoming_tx: mpsc::UnboundedSender<RPC>,
-    incoming_rx: mpsc::UnboundedReceiver<RPC>,
-
-    // Used to pub/sub/ls/peers.
-    control_tx: mpsc::UnboundedSender<ControlCommand>,
-    control_rx: mpsc::UnboundedReceiver<ControlCommand>,
-
-    // Connected peer.
-    peers: HashMap<PeerId, mpsc::UnboundedSender<FloodsubRpc>>,
+/// A quorum w.r.t. the configured replication factor specifies the minimum
+/// number of distinct nodes that must be successfully contacted in order
+/// for a query to succeed.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Quorum {
+    One,
+    Majority,
+    All,
+    N(NonZeroUsize)
 }
-*/
 
-
-/*
-impl FloodSub {
-    fn drop_all_peers(&mut self) {
-        for (p, tx) in self.peers.drain().take(1) {
-            tx.close_channel();
-            log::trace!("drop peer {}", p);
-        }
-    }
-
-    fn drop_all_my_topics(&mut self) {
-        for (t, mut subs) in self.my_topics.drain().take(1) {
-            for (id, tx) in subs.drain().take(1) {
-                tx.close_channel();
-                log::trace!("drop peer {} in myTopic {:?}", id, t.clone());
-            }
-        }
-    }
-
-    fn drop_all_topics(&mut self) {
-        for (t, mut subs) in self.topics.drain().take(1) {
-            for (p, _) in subs.drain().take(1) {
-                log::trace!("drop peer {} in topic {:?}", p, t.clone());
-            }
+impl Quorum {
+    /// Evaluate the quorum w.r.t a given total (number of peers).
+    fn eval(&self, total: NonZeroUsize) -> NonZeroUsize {
+        match self {
+            Quorum::One => NonZeroUsize::new(1).expect("1 != 0"),
+            Quorum::Majority => NonZeroUsize::new(total.get() / 2 + 1).expect("n + 1 != 0"),
+            Quorum::All => total,
+            Quorum::N(n) => NonZeroUsize::min(total, *n)
         }
     }
 }
-*/
+
+/// A record either received by the given peer or retrieved from the local
+/// record store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRecord {
+    /// The peer from whom the record was received. `None` if the record was
+    /// retrieved from local storage.
+    pub peer: Option<PeerId>,
+    pub record: Record,
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Events
+
+/// The events produced by the `Kademlia` behaviour.
+///
+/// See [`NetworkBehaviour::poll`].
+#[derive(Debug)]
+pub enum KademliaEvent {
+    /// A query has produced a result.
+    QueryResult {
+        /// The ID of the query that finished.
+        id: QueryId,
+        /// The result of the query.
+        result: QueryResult,
+        /// Execution statistics from the query.
+        stats: QueryStats
+    },
+
+    /// The routing table has been updated with a new peer and / or
+    /// address, thereby possibly evicting another peer.
+    RoutingUpdated {
+        /// The ID of the peer that was added or updated.
+        peer: PeerId,
+        /// The full list of known addresses of `peer`.
+        addresses: Addresses,
+        /// The ID of the peer that was evicted from the routing table to make
+        /// room for the new peer, if any.
+        old_peer: Option<PeerId>,
+    },
+
+    /// A peer has connected for whom no listen address is known.
+    ///
+    /// If the peer is to be added to the routing table, a known
+    /// listen address for the peer must be provided via [`Kademlia::add_address`].
+    UnroutablePeer {
+        peer: PeerId
+    },
+
+    /// A connection to a peer has been established for whom a listen address
+    /// is known but the peer has not been added to the routing table either
+    /// because [`KademliaBucketInserts::Manual`] is configured or because
+    /// the corresponding bucket is full.
+    ///
+    /// If the peer is to be included in the routing table, it must
+    /// must be explicitly added via [`Kademlia::add_address`], possibly after
+    /// removing another peer.
+    ///
+    /// See [`Kademlia::kbucket`] for insight into the contents of
+    /// the k-bucket of `peer`.
+    RoutablePeer {
+        peer: PeerId,
+        address: Multiaddr,
+    },
+
+    /// A connection to a peer has been established for whom a listen address
+    /// is known but the peer is only pending insertion into the routing table
+    /// if the least-recently disconnected peer is unresponsive, i.e. the peer
+    /// may not make it into the routing table.
+    ///
+    /// If the peer is to be unconditionally included in the routing table,
+    /// it should be explicitly added via [`Kademlia::add_address`] after
+    /// removing another peer.
+    ///
+    /// See [`Kademlia::kbucket`] for insight into the contents of
+    /// the k-bucket of `peer`.
+    PendingRoutablePeer {
+        peer: PeerId,
+        address: Multiaddr,
+    }
+}
+
+/// The results of Kademlia queries.
+#[derive(Debug)]
+pub enum QueryResult {
+    /// The result of [`Kademlia::bootstrap`].
+    Bootstrap(BootstrapResult),
+
+    /// The result of [`Kademlia::get_closest_peers`].
+    GetClosestPeers(GetClosestPeersResult),
+
+    /// The result of [`Kademlia::get_providers`].
+    GetProviders(GetProvidersResult),
+
+    /// The result of [`Kademlia::start_providing`].
+    StartProviding(AddProviderResult),
+
+    /// The result of a (automatic) republishing of a provider record.
+    RepublishProvider(AddProviderResult),
+
+    /// The result of [`Kademlia::get_record`].
+    GetRecord(GetRecordResult),
+
+    /// The result of [`Kademlia::put_record`].
+    PutRecord(PutRecordResult),
+
+    /// The result of a (automatic) republishing of a (value-)record.
+    RepublishRecord(PutRecordResult),
+}
+
+/// The result of [`Kademlia::get_record`].
+pub type GetRecordResult = std::result::Result<GetRecordOk, GetRecordError>;
+
+/// The successful result of [`Kademlia::get_record`].
+#[derive(Debug, Clone)]
+pub struct GetRecordOk {
+    pub records: Vec<PeerRecord>
+}
+
+/// The error result of [`Kademlia::get_record`].
+#[derive(Debug, Clone)]
+pub enum GetRecordError {
+    NotFound {
+        key: record::Key,
+        closest_peers: Vec<PeerId>
+    },
+    QuorumFailed {
+        key: record::Key,
+        records: Vec<PeerRecord>,
+        quorum: NonZeroUsize
+    },
+    Timeout {
+        key: record::Key,
+        records: Vec<PeerRecord>,
+        quorum: NonZeroUsize
+    }
+}
+
+impl GetRecordError {
+    /// Gets the key of the record for which the operation failed.
+    pub fn key(&self) -> &record::Key {
+        match self {
+            GetRecordError::QuorumFailed { key, .. } => key,
+            GetRecordError::Timeout { key, .. } => key,
+            GetRecordError::NotFound { key, .. } => key,
+        }
+    }
+
+    /// Extracts the key of the record for which the operation failed,
+    /// consuming the error.
+    pub fn into_key(self) -> record::Key {
+        match self {
+            GetRecordError::QuorumFailed { key, .. } => key,
+            GetRecordError::Timeout { key, .. } => key,
+            GetRecordError::NotFound { key, .. } => key,
+        }
+    }
+}
+
+/// The result of [`Kademlia::put_record`].
+pub type PutRecordResult = std::result::Result<PutRecordOk, PutRecordError>;
+
+/// The successful result of [`Kademlia::put_record`].
+#[derive(Debug, Clone)]
+pub struct PutRecordOk {
+    pub key: record::Key
+}
+
+/// The error result of [`Kademlia::put_record`].
+#[derive(Debug)]
+pub enum PutRecordError {
+    QuorumFailed {
+        key: record::Key,
+        /// [`PeerId`]s of the peers the record was successfully stored on.
+        success: Vec<PeerId>,
+        quorum: NonZeroUsize
+    },
+    Timeout {
+        key: record::Key,
+        /// [`PeerId`]s of the peers the record was successfully stored on.
+        success: Vec<PeerId>,
+        quorum: NonZeroUsize
+    },
+}
+
+impl PutRecordError {
+    /// Gets the key of the record for which the operation failed.
+    pub fn key(&self) -> &record::Key {
+        match self {
+            PutRecordError::QuorumFailed { key, .. } => key,
+            PutRecordError::Timeout { key, .. } => key,
+        }
+    }
+
+    /// Extracts the key of the record for which the operation failed,
+    /// consuming the error.
+    pub fn into_key(self) -> record::Key {
+        match self {
+            PutRecordError::QuorumFailed { key, .. } => key,
+            PutRecordError::Timeout { key, .. } => key,
+        }
+    }
+}
+
+/// The result of [`Kademlia::bootstrap`].
+pub type BootstrapResult = std::result::Result<BootstrapOk, BootstrapError>;
+
+/// The successful result of [`Kademlia::bootstrap`].
+#[derive(Debug, Clone)]
+pub struct BootstrapOk {
+    pub peer: PeerId,
+    pub num_remaining: u32,
+}
+
+/// The error result of [`Kademlia::bootstrap`].
+#[derive(Debug, Clone)]
+pub enum BootstrapError {
+    Timeout {
+        peer: PeerId,
+        num_remaining: Option<u32>,
+    }
+}
+
+/// The result of [`Kademlia::get_closest_peers`].
+pub type GetClosestPeersResult = std::result::Result<GetClosestPeersOk, GetClosestPeersError>;
+
+/// The successful result of [`Kademlia::get_closest_peers`].
+#[derive(Debug, Clone)]
+pub struct GetClosestPeersOk {
+    pub key: Vec<u8>,
+    pub peers: Vec<PeerId>
+}
+
+/// The error result of [`Kademlia::get_closest_peers`].
+#[derive(Debug, Clone)]
+pub enum GetClosestPeersError {
+    Timeout {
+        key: Vec<u8>,
+        peers: Vec<PeerId>
+    }
+}
+
+impl GetClosestPeersError {
+    /// Gets the key for which the operation failed.
+    pub fn key(&self) -> &Vec<u8> {
+        match self {
+            GetClosestPeersError::Timeout { key, .. } => key,
+        }
+    }
+
+    /// Extracts the key for which the operation failed,
+    /// consuming the error.
+    pub fn into_key(self) -> Vec<u8> {
+        match self {
+            GetClosestPeersError::Timeout { key, .. } => key,
+        }
+    }
+}
+
+/// The result of [`Kademlia::get_providers`].
+pub type GetProvidersResult = std::result::Result<GetProvidersOk, GetProvidersError>;
+
+/// The successful result of [`Kademlia::get_providers`].
+#[derive(Debug, Clone)]
+pub struct GetProvidersOk {
+    pub key: record::Key,
+    pub providers: HashSet<PeerId>,
+    pub closest_peers: Vec<PeerId>
+}
+
+/// The error result of [`Kademlia::get_providers`].
+#[derive(Debug, Clone)]
+pub enum GetProvidersError {
+    Timeout {
+        key: record::Key,
+        providers: HashSet<PeerId>,
+        closest_peers: Vec<PeerId>
+    }
+}
+
+impl GetProvidersError {
+    /// Gets the key for which the operation failed.
+    pub fn key(&self) -> &record::Key {
+        match self {
+            GetProvidersError::Timeout { key, .. } => key,
+        }
+    }
+
+    /// Extracts the key for which the operation failed,
+    /// consuming the error.
+    pub fn into_key(self) -> record::Key {
+        match self {
+            GetProvidersError::Timeout { key, .. } => key,
+        }
+    }
+}
+
+/// The result of publishing a provider record.
+pub type AddProviderResult = std::result::Result<AddProviderOk, AddProviderError>;
+
+/// The successful result of publishing a provider record.
+#[derive(Debug, Clone)]
+pub struct AddProviderOk {
+    pub key: record::Key,
+}
+
+/// The possible errors when publishing a provider record.
+#[derive(Debug)]
+pub enum AddProviderError {
+    /// The query timed out.
+    Timeout {
+        key: record::Key,
+    },
+}
+
+impl AddProviderError {
+    /// Gets the key for which the operation failed.
+    pub fn key(&self) -> &record::Key {
+        match self {
+            AddProviderError::Timeout { key, .. } => key,
+        }
+    }
+
+    /// Extracts the key for which the operation failed,
+    pub fn into_key(self) -> record::Key {
+        match self {
+            AddProviderError::Timeout { key, .. } => key,
+        }
+    }
+}
+
+impl From<kbucket::EntryView<kbucket::Key<PeerId>, Addresses>> for KadPeer {
+    fn from(e: kbucket::EntryView<kbucket::Key<PeerId>, Addresses>) -> KadPeer {
+        KadPeer {
+            node_id: e.node.key.into_preimage(),
+            multiaddrs: e.node.value.into_vec(),
+            connection_ty: match e.status {
+                NodeStatus::Connected => KadConnectionType::Connected,
+                NodeStatus::Disconnected => KadConnectionType::NotConnected
+            }
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Internal query state
+
+struct QueryInner {
+    /// The query-specific state.
+    info: QueryInfo,
+    /// Addresses of peers discovered during a query.
+    addresses: FnvHashMap<PeerId, SmallVec<[Multiaddr; 8]>>,
+    /// A map of pending requests to peers.
+    ///
+    /// A request is pending if the targeted peer is not currently connected
+    /// and these requests are sent as soon as a connection to the peer is established.
+    pending_rpcs: SmallVec<[(PeerId, KademliaHandlerIn<QueryId>); K_VALUE.get()]>
+}
+
+impl QueryInner {
+    fn new(info: QueryInfo) -> Self {
+        QueryInner {
+            info,
+            addresses: Default::default(),
+            pending_rpcs: SmallVec::default()
+        }
+    }
+}
+
+/// The context of a [`QueryInfo::AddProvider`] query.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum AddProviderContext {
+    Publish,
+    Republish,
+}
+
+/// The context of a [`QueryInfo::PutRecord`] query.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PutRecordContext {
+    Publish,
+    Republish,
+    Replicate,
+    Cache,
+}
+
+/// Information about a running query.
+#[derive(Debug, Clone)]
+pub enum QueryInfo {
+    /// A query initiated by [`Kademlia::bootstrap`].
+    Bootstrap {
+        /// The targeted peer ID.
+        peer: PeerId,
+        /// The remaining random peer IDs to query, one per
+        /// bucket that still needs refreshing.
+        ///
+        /// This is `None` if the initial self-lookup has not
+        /// yet completed and `Some` with an exhausted iterator
+        /// if bootstrapping is complete.
+        remaining: Option<std::vec::IntoIter<kbucket::Key<PeerId>>>
+    },
+
+    /// A query initiated by [`Kademlia::get_closest_peers`].
+    GetClosestPeers { key: Vec<u8> },
+
+    /// A query initiated by [`Kademlia::get_providers`].
+    GetProviders {
+        /// The key for which to search for providers.
+        key: record::Key,
+        /// The found providers.
+        providers: HashSet<PeerId>,
+    },
+
+    /// A (repeated) query initiated by [`Kademlia::start_providing`].
+    AddProvider {
+        /// The record key.
+        key: record::Key,
+        /// The current phase of the query.
+        phase: AddProviderPhase,
+        /// The execution context of the query.
+        context: AddProviderContext,
+    },
+
+    /// A (repeated) query initiated by [`Kademlia::put_record`].
+    PutRecord {
+        record: Record,
+        /// The expected quorum of responses w.r.t. the replication factor.
+        quorum: NonZeroUsize,
+        /// The current phase of the query.
+        phase: PutRecordPhase,
+        /// The execution context of the query.
+        context: PutRecordContext,
+    },
+
+    /// A query initiated by [`Kademlia::get_record`].
+    GetRecord {
+        /// The key to look for.
+        key: record::Key,
+        /// The records with the id of the peer that returned them. `None` when
+        /// the record was found in the local store.
+        records: Vec<PeerRecord>,
+        /// The number of records to look for.
+        quorum: NonZeroUsize,
+        /// The closest peer to `key` that did not return a record.
+        ///
+        /// When a record is found in a standard Kademlia query (quorum == 1),
+        /// it is cached at this peer as soon as a record is found.
+        cache_at: Option<kbucket::Key<PeerId>>,
+    },
+}
+
+impl QueryInfo {
+    /// Creates an event for a handler to issue an outgoing request in the
+    /// context of a query.
+    fn to_request(&self, query_id: QueryId) -> KademliaHandlerIn<QueryId> {
+        match &self {
+            QueryInfo::Bootstrap { peer, .. } => KademliaHandlerIn::FindNodeReq {
+                key: peer.clone().into_bytes(),
+                user_data: query_id,
+            },
+            QueryInfo::GetClosestPeers { key, .. } => KademliaHandlerIn::FindNodeReq {
+                key: key.clone(),
+                user_data: query_id,
+            },
+            QueryInfo::GetProviders { key, .. } => KademliaHandlerIn::GetProvidersReq {
+                key: key.clone(),
+                user_data: query_id,
+            },
+            QueryInfo::AddProvider { key, phase, .. } => match phase {
+                AddProviderPhase::GetClosestPeers => KademliaHandlerIn::FindNodeReq {
+                    key: key.to_vec(),
+                    user_data: query_id,
+                },
+                AddProviderPhase::AddProvider { provider_id, external_addresses, .. } => {
+                    KademliaHandlerIn::AddProvider {
+                        key: key.clone(),
+                        provider: crate::protocol::KadPeer {
+                            node_id: provider_id.clone(),
+                            multiaddrs: external_addresses.clone(),
+                            connection_ty: crate::protocol::KadConnectionType::Connected,
+                        }
+                    }
+                }
+            },
+            QueryInfo::GetRecord { key, .. } => KademliaHandlerIn::GetRecord {
+                key: key.clone(),
+                user_data: query_id,
+            },
+            QueryInfo::PutRecord { record, phase, .. } => match phase {
+                PutRecordPhase::GetClosestPeers => KademliaHandlerIn::FindNodeReq {
+                    key: record.key.to_vec(),
+                    user_data: query_id,
+                },
+                PutRecordPhase::PutRecord { .. } => KademliaHandlerIn::PutRecord {
+                    record: record.clone(),
+                    user_data: query_id
+                }
+            }
+        }
+    }
+}
+
+/// The phases of a [`QueryInfo::AddProvider`] query.
+#[derive(Debug, Clone)]
+pub enum AddProviderPhase {
+    /// The query is searching for the closest nodes to the record key.
+    GetClosestPeers,
+
+    /// The query advertises the local node as a provider for the key to
+    /// the closest nodes to the key.
+    AddProvider {
+        /// The local peer ID that is advertised as a provider.
+        provider_id: PeerId,
+        /// The external addresses of the provider being advertised.
+        external_addresses: Vec<Multiaddr>,
+        /// Query statistics from the finished `GetClosestPeers` phase.
+        get_closest_peers_stats: QueryStats,
+    },
+}
+
+/// The phases of a [`QueryInfo::PutRecord`] query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PutRecordPhase {
+    /// The query is searching for the closest nodes to the record key.
+    GetClosestPeers,
+
+    /// The query is replicating the record to the closest nodes to the key.
+    PutRecord {
+        /// A list of peers the given record has been successfully replicated to.
+        success: Vec<PeerId>,
+        /// Query statistics from the finished `GetClosestPeers` phase.
+        get_closest_peers_stats: QueryStats,
+    },
+}
+
+/// A mutable reference to a running query.
+pub struct QueryMut<'a> {
+    query: &'a mut Query<QueryInner>,
+}
+
+impl<'a> QueryMut<'a> {
+    pub fn id(&self) -> QueryId {
+        self.query.id()
+    }
+
+    /// Gets information about the type and state of the query.
+    pub fn info(&self) -> &QueryInfo {
+        &self.query.inner.info
+    }
+
+    /// Gets execution statistics about the query.
+    ///
+    /// For a multi-phase query such as `put_record`, these are the
+    /// statistics of the current phase.
+    pub fn stats(&self) -> &QueryStats {
+        self.query.stats()
+    }
+
+    /// Finishes the query asap, without waiting for the
+    /// regular termination conditions.
+    pub fn finish(&mut self) {
+        self.query.finish()
+    }
+}
+
+/// An immutable reference to a running query.
+pub struct QueryRef<'a> {
+    query: &'a Query<QueryInner>,
+}
+
+impl<'a> QueryRef<'a> {
+    pub fn id(&self) -> QueryId {
+        self.query.id()
+    }
+
+    /// Gets information about the type and state of the query.
+    pub fn info(&self) -> &QueryInfo {
+        &self.query.inner.info
+    }
+
+    /// Gets execution statistics about the query.
+    ///
+    /// For a multi-phase query such as `put_record`, these are the
+    /// statistics of the current phase.
+    pub fn stats(&self) -> &QueryStats {
+        self.query.stats()
+    }
+}
+
+/// An operation failed to due no known peers in the routing table.
+#[derive(Debug, Clone)]
+pub struct NoKnownPeers();
+
+impl fmt::Display for NoKnownPeers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "No known peers.")
+    }
+}
+
+impl std::error::Error for NoKnownPeers {}
+
+/// The possible outcomes of [`Kademlia::add_address`].
+pub enum RoutingUpdate {
+    /// The given peer and address has been added to the routing
+    /// table.
+    Success,
+    /// The peer and address is pending insertion into
+    /// the routing table, if a disconnected peer fails
+    /// to respond. If the given peer and address ends up
+    /// in the routing table, [`KademliaEvent::RoutingUpdated`]
+    /// is eventually emitted.
+    Pending,
+    /// The routing table update failed, either because the
+    /// corresponding bucket for the peer is full and the
+    /// pending slot(s) are occupied, or because the given
+    /// peer ID is deemed invalid (e.g. refers to the local
+    /// peer ID).
+    Failed,
+}
+
+/// The maximum number of local external addresses. When reached any
+/// further externally reported addresses are ignored. The behaviour always
+/// tracks all its listen addresses.
+const MAX_LOCAL_EXTERNAL_ADDRS: usize = 20;
+
