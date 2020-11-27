@@ -18,20 +18,25 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use std::{time::Instant, time::Duration, num::NonZeroUsize};
+use either::Either;
+use fnv::FnvHashMap;
+use async_std::task;
+use libp2prs_core::PeerId;
+use libp2prs_swarm::Control as SwarmControl;
+
+use crate::{ALPHA_VALUE, K_VALUE};
+use crate::kbucket::{Key, KeyBytes, Distance};
+
 mod peers;
 
 use peers::PeersIterState;
 use peers::closest::{ClosestPeersIterConfig, ClosestPeersIter, disjoint::ClosestDisjointPeersIter};
 use peers::fixed::FixedPeersIter;
+use futures::channel::mpsc;
+use futures::{StreamExt, SinkExt};
+use std::collections::BTreeMap;
 
-use std::{time::Instant, time::Duration, num::NonZeroUsize};
-use either::Either;
-use fnv::FnvHashMap;
-
-use libp2prs_core::PeerId;
-
-use crate::{ALPHA_VALUE, K_VALUE};
-use crate::kbucket::{Key, KeyBytes};
 
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
 ///
@@ -253,6 +258,138 @@ impl Default for QueryConfig {
         }
     }
 }
+
+// struct QueryJob {
+//     /// The key to be queried.
+//     key: K,
+//     /// The controller of Swarm.
+//     swarm: SwarmControl,
+//
+//
+// }
+
+/// Representation of a peer in the context of a iterator.
+#[derive(Debug, Clone)]
+struct Peer {
+    key: Key<PeerId>,
+    state: PeerState
+}
+
+/// The state of a single `Peer`.
+#[derive(Debug, Copy, Clone)]
+enum PeerState {
+    /// The peer has not yet been contacted.
+    ///
+    /// This is the starting state for every peer.
+    NotContacted,
+
+    /// The iterator is waiting for a result from the peer.
+    Waiting(Instant),
+
+    /// A result was not delivered for the peer within the configured timeout.
+    ///
+    /// The peer is not taken into account for the termination conditions
+    /// of the iterator until and unless it responds.
+    Unresponsive,
+
+    /// Obtaining a result from the peer has failed.
+    ///
+    /// This is a final state, reached as a result of a call to `on_failure`.
+    Failed,
+
+    /// A successful result from the peer has been delivered.
+    ///
+    /// This is a final state, reached as a result of a call to `on_success`.
+    Succeeded,
+}
+
+impl Peer {
+    fn new(key: Key<PeerId>) -> Self {
+        Self {
+            key,
+            state: PeerState::NotContacted
+        }
+    }
+}
+
+pub(crate) struct Query2<K> {
+    /// The key to be queried.
+    key: K,
+    /// The controller of Swarm.
+    swarm: SwarmControl,
+    /// The seed peers used to start the query.
+    seeds: Vec<Key<PeerId>>,
+    /// All queried peers sorted by distance.
+    closest_peers: BTreeMap<Distance, Peer>,
+}
+
+impl<K> Query2<K>
+where
+    K: Into<KeyBytes> + Clone,
+{
+    pub(crate) fn new(key: K, swarm: SwarmControl, seeds: Vec<Key<PeerId>>) -> Self {
+        Self {
+            key,
+            swarm,
+            seeds,
+            closest_peers: BTreeMap::default()
+        }
+    }
+
+    pub(crate) fn run(self) -> u32 {
+        let mut me = self;
+
+        let target = me.key.clone().into();
+        let swarm = self.swarm.clone();
+
+        // check for empty seed peers
+        if me.seeds.is_empty() {
+            // TODO:
+        }
+
+        // put seeds into the query peers list, marked as state 'NotContacted'
+        for key in self.seeds {
+            let distance = target.distance(key.clone().into());
+            me.closest_peers.insert(distance, Peer::new(key));
+        }
+
+        // start a task for query
+        task::spawn(async move {
+
+            // starting iterative query...
+            loop {
+
+            }
+
+            // the channel used to deliver the result of each jobs
+            let (tx, mut rx) = mpsc::channel(0);
+
+            // then start 'peers.len()' jobs to do FindNode request
+            let mut njobs :u32 = 0;
+            for peer in peers {
+                log::info!("about to start query job for {:?}", peer);
+
+                njobs += 1;
+                tx.clone().send(5u32).await;
+            }
+
+            // start query jobs according to the peers, one for each
+
+            let mut result = vec!();
+            for i in 0..njobs {
+                let r = rx.next().await.unwrap();
+
+                result.push(r);
+            }
+
+            log::info!("result={:?}", result);
+
+        });
+
+        0
+    }
+}
+
 
 /// A query in a `QueryPool`.
 pub struct Query<TInner> {

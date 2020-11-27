@@ -41,7 +41,7 @@ use libp2prs_traits::{ReadEx, WriteEx};
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType};
 use crate::control::{Control, ControlCommand};
 
-use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats};
+use crate::query::{QueryId, QueryPool, QueryConfig, Query, Query2, QueryStats};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
@@ -559,6 +559,35 @@ impl<TStore> Kademlia<TStore>
             K: Borrow<[u8]> + Clone
     {
         self.kbuckets.bucket(&kbucket::Key::new(key))
+    }
+
+    /// Initiates an iterative query for the closest peers to the given key.
+    ///
+    /// The result of the query is delivered in a
+    /// [`KademliaEvent::QueryResult{QueryResult::GetClosestPeers}`].
+    pub fn get_closest_peers2<K>(&mut self, key: K) -> ()
+        where
+            K: Borrow<[u8]> + Clone
+    {
+        let info = QueryInfo::GetClosestPeers { key: key.borrow().to_vec() };
+        let target = kbucket::Key::new(key);
+        let seeds = self.kbuckets.closest_keys(target.as_ref()).into_iter().collect();
+        let inner = QueryInner::new(info);
+
+        let query = Query2::new(target.clone(),
+                                        self.swarm.clone().expect("must be there"),
+                                        seeds);
+
+        // Now we have a query to run
+        query.run();
+
+        //self.queries.add_iter_closest(target.clone(), peers, inner);
+
+        ()
+    }
+
+    fn run_query(&self, query: QueryInner) {
+
     }
 
     /// Initiates an iterative query for the closest peers to the given key.
