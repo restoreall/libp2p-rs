@@ -91,6 +91,7 @@ use crate::ping::{PingConfig, PingHandler};
 use crate::protocol_handler::IProtocolHandler;
 use crate::registry::Addresses;
 use crate::substream::{ConnectInfo, StreamId, Substream};
+use crate::dial::EitherDialAddr;
 
 type Result<T> = std::result::Result<T, SwarmError>;
 
@@ -492,6 +493,10 @@ impl Swarm {
         log::trace!("Swarm control command={:?}", cmd);
 
         match cmd {
+            SwarmControlCmd::Connect(peer_id, addrs, reply) => {
+                // got the peer_id and the addresses, start the dialer for it
+                let _ = self.on_connect(peer_id, addrs, reply);
+            }
             SwarmControlCmd::NewConnection(peer_id, reply) => {
                 // got the peer_id, start the dialer for it
                 let _ = self.on_new_connection(peer_id, reply);
@@ -530,6 +535,19 @@ impl Swarm {
             }
         }
 
+        Ok(())
+    }
+
+    fn on_connect(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>, reply: oneshot::Sender<Result<()>>) -> Result<()> {
+        // return if we already have the connection, otherwise, start dialing
+        if let Some(_conn) = self.get_best_conn(&peer_id) {
+            let _ = reply.send(Ok(()));
+        } else {
+            // dialing peer, with the post-processing callback
+            self.dial_addr(peer_id, addrs, |r: Result<&mut Connection>| {
+                let _ = reply.send(r.map(|_| ()));
+            });
+        }
         Ok(())
     }
 
@@ -727,6 +745,20 @@ impl Swarm {
             }
         });
         Ok(())
+    }
+
+    fn dial_addr<F: FnOnce(Result<&mut Connection>) + Send + 'static>(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>, f: F) {
+        // if dialing to itself...
+        if self.local_peer_id().eq(&peer_id) {
+            f(Err(SwarmError::DialToSelf));
+            return;
+        }
+
+        // allocate transaction id and push box::f into hashmap for post-processing
+        let tid = self.assign_tid();
+        self.dial_transactions.insert(tid, Box::new(f));
+        self.dialer
+            .dial(peer_id, self.transports.clone(), EitherDialAddr::Addresses(addrs.into()), self.event_sender.clone(), tid);
     }
 
     fn dial_peer<F: FnOnce(Result<&mut Connection>) + Send + 'static>(&mut self, peer_id: PeerId, f: F) {

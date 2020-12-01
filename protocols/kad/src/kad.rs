@@ -63,6 +63,9 @@ pub struct Kademlia<TStore> {
     /// The currently active (i.e. in-progress) queries.
     queries: QueryPool<QueryInner>,
 
+    /// The config for queries.
+    query_config: QueryConfig,
+
     /// The currently connected peers.
     ///
     /// This is a superset of the connected peers currently in the routing table.
@@ -364,7 +367,8 @@ impl<TStore> Kademlia<TStore>
             kbuckets: KBucketsTable::new(local_key, config.kbucket_pending_timeout),
             kbucket_inserts: config.kbucket_inserts,
             //queued_events: VecDeque::with_capacity(config.query_config.replication_factor.get()),
-            queries: QueryPool::new(config.query_config),
+            queries: QueryPool::new(config.query_config.clone()),
+            query_config: config.query_config,
             connected_peers: Default::default(),
             add_provider_job,
             put_record_job,
@@ -565,7 +569,7 @@ impl<TStore> Kademlia<TStore>
     ///
     /// The result of the query is delivered in a
     /// [`KademliaEvent::QueryResult{QueryResult::GetClosestPeers}`].
-    pub fn get_closest_peers2<K>(&mut self, key: K) -> ()
+    pub fn get_closest_peers2<K: Send + 'static>(&mut self, key: K) -> ()
         where
             K: Borrow<[u8]> + Clone
     {
@@ -574,9 +578,9 @@ impl<TStore> Kademlia<TStore>
         let seeds = self.kbuckets.closest_keys(target.as_ref()).into_iter().collect();
         let inner = QueryInner::new(info);
 
-        let query = Query2::new(target.clone(),
-                                        self.swarm.clone().expect("must be there"),
-                                        seeds);
+        let mut query = Query2::new(target.clone(), &self.query_config,
+                                    self.swarm.clone().expect("must be there"),
+                                    seeds);
 
         // Now we have a query to run
         query.run();

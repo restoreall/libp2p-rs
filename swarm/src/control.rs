@@ -22,7 +22,7 @@ use futures::{
     channel::{mpsc, oneshot},
     prelude::*,
 };
-use libp2prs_core::PeerId;
+use libp2prs_core::{PeerId, Multiaddr};
 
 use crate::connection::ConnectionId;
 use crate::identify::IdentifyInfo;
@@ -42,6 +42,8 @@ type Result<T> = std::result::Result<T, SwarmError>;
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum SwarmControlCmd {
+    /// Open a connection to the remote peer with address specified.
+    Connect(PeerId, Vec<Multiaddr>, oneshot::Sender<Result<()>>),
     /// Open a connection to the remote peer.
     NewConnection(PeerId, oneshot::Sender<Result<()>>),
     /// Close any connection to the remote peer.
@@ -106,14 +108,29 @@ impl Control {
         self.metric.get_peer_in_and_out(peer_id)
     }
 
+    /// Make a new connection towards the remote peer with address specified.
+    pub async fn connect(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>) -> Result<()> {
+        let (tx, rx) = oneshot::channel::<Result<()>>();
+        let _ = self.sender.send(SwarmControlCmd::Connect(peer_id, addrs, tx)).await;
+        rx.await?
+    }
+
     /// Make a new connection towards the remote peer.
+    ///
+    /// It will lookup the peer store for address of the peer,
+    /// otherwise initiate Kad-DHT for address querying, when DHT is enabled.
     pub async fn new_connection(&mut self, peer_id: PeerId) -> Result<()> {
         let (tx, rx) = oneshot::channel::<Result<()>>();
-        let _ = self.sender.send(SwarmControlCmd::NewConnection(peer_id.clone(), tx)).await;
+        let _ = self.sender.send(SwarmControlCmd::NewConnection(peer_id, tx)).await;
         rx.await?
     }
 
     /// Open a new outbound stream towards the remote peer.
+    ///
+    /// It will lookup the peer store for address of the peer,
+    /// otherwise initiate Kad-DHT for address querying, when DHT is enabled.
+    /// In the end, it will open an outgoing sub-stream when the connection is
+    /// eventually established.
     pub async fn new_stream(&mut self, peer_id: PeerId, pids: Vec<ProtocolId>) -> Result<Substream> {
         let (tx, rx) = oneshot::channel();
         self.sender.send(SwarmControlCmd::NewStream(peer_id, pids, tx)).await?;

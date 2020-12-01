@@ -312,9 +312,11 @@ impl Peer {
     }
 }
 
-pub(crate) struct Query2<K> {
+pub(crate) struct Query2<'a, K> {
     /// The key to be queried.
     key: K,
+    /// The kad configurations for queries.
+    config: &'a QueryConfig,
     /// The controller of Swarm.
     swarm: SwarmControl,
     /// The seed peers used to start the query.
@@ -323,67 +325,109 @@ pub(crate) struct Query2<K> {
     closest_peers: BTreeMap<Distance, Peer>,
 }
 
-impl<K> Query2<K>
+pub(crate) struct QueryUpdate {
+    source: PeerId,
+    heard: Option<Vec<Key<PeerId>>>,
+    unreachable: Option<PeerId>,
+    queried: Option<PeerId>,
+    timestamp: Instant
+}
+
+impl QueryUpdate {
+    fn new(source: PeerId, heard: Option<Vec<Key<PeerId>>>, unreachable: Option<PeerId>, queried: Option<PeerId>, timestamp: Instant) -> Self {
+        Self {
+            source,
+            heard,
+            unreachable,
+            queried,
+            timestamp
+        }
+    }
+}
+
+
+impl<'a, K> Query2<'a, K>
 where
-    K: Into<KeyBytes> + Clone,
+    K: Into<KeyBytes> + Clone + Send + 'static,
 {
-    pub(crate) fn new(key: K, swarm: SwarmControl, seeds: Vec<Key<PeerId>>) -> Self {
+    pub(crate) fn new(key: K, config: &'a QueryConfig, swarm: SwarmControl, seeds: Vec<Key<PeerId>>) -> Self {
         Self {
             key,
+            config,
             swarm,
             seeds,
-            closest_peers: BTreeMap::default()
+            closest_peers: BTreeMap::default(),
         }
     }
 
-    pub(crate) fn run(self) -> u32 {
-        let mut me = self;
-
-        let target = me.key.clone().into();
-        let swarm = self.swarm.clone();
-
+    pub(crate) fn run(&mut self) -> u32 {
         // check for empty seed peers
-        if me.seeds.is_empty() {
+        if self.seeds.is_empty() {
             // TODO:
         }
 
-        // put seeds into the query peers list, marked as state 'NotContacted'
-        for key in self.seeds {
-            let distance = target.distance(key.clone().into());
-            me.closest_peers.insert(distance, Peer::new(key));
-        }
+        let target = self.key.clone().into();
+        let swarm = self.swarm.clone();
+        let seeds = self.seeds.clone();
+        // TODO:
+        let myid = PeerId::random();
+        // the channel used to deliver the result of each jobs
+        let (mut tx, mut rx) = mpsc::channel(self.config.parallelism.get());
+
+        // // put seeds into the query peers list, marked as state 'NotContacted'
+        // for key in me.seeds {
+        //     let distance = target.distance(&key);
+        //     me.closest_peers.insert(distance, Peer::new(key));
+        // }
 
         // start a task for query
         task::spawn(async move {
 
-            // starting iterative query...
+            // deliver the seeds to query task
+            tx.send(QueryUpdate::new(myid, Some(seeds), None, None, Instant::now())).await;
+
+            //let mut queries = me.closest_peers.values_mut();
+
+            // starting iterative querying for all selected peers...
             loop {
 
+                let update = rx.next().await.expect("must");
+
+                // updating...
+
+                let peers = update.heard.unwrap();
+
+
+                // try spawning the queries, if there are no available peers to query then we won't spawn them
+                for peer in peers {
+                    //run_query_single(cause, p, ch)
+                }
+                // // start query job for the peers. the results will be sent back via the channel tx
+                //
+                // // then start 'peers.len()' jobs to do FindNode request
+                // let mut njobs :u32 = 0;
+                // for peer in queries {
+                //     log::info!("about to start query job for {:?}", peer);
+                //
+                //     njobs += 1;
+                //     tx.clone().send(5u32).await;
+                // }
+
+                // start query jobs according to the peers, one for each
+                // let mut result = vec!();
+                // for i in 0..njobs {
+                //     let r = rx.next().await.unwrap();
+                //
+                //     result.push(r);
+                // }
+
+                // log::info!("result={:?}", result);
+
+                //queries.
+
+                // handle the results, break the loop or start iterative
+
             }
-
-            // the channel used to deliver the result of each jobs
-            let (tx, mut rx) = mpsc::channel(0);
-
-            // then start 'peers.len()' jobs to do FindNode request
-            let mut njobs :u32 = 0;
-            for peer in peers {
-                log::info!("about to start query job for {:?}", peer);
-
-                njobs += 1;
-                tx.clone().send(5u32).await;
-            }
-
-            // start query jobs according to the peers, one for each
-
-            let mut result = vec!();
-            for i in 0..njobs {
-                let r = rx.next().await.unwrap();
-
-                result.push(r);
-            }
-
-            log::info!("result={:?}", result);
-
         });
 
         0
