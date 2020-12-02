@@ -548,7 +548,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     /// Returns an iterator over all non-empty buckets in the routing table.
-    pub fn kbuckets(&mut self)
+    fn kbuckets(&mut self)
                     -> impl Iterator<Item = kbucket::KBucketRef<'_, kbucket::Key<PeerId>, Addresses>>
     {
         self.kbuckets.iter().filter(|b| !b.is_empty())
@@ -565,48 +565,58 @@ impl<TStore> Kademlia<TStore>
         self.kbuckets.bucket(&kbucket::Key::new(key))
     }
 
-    /// Initiates an iterative query for the closest peers to the given key.
-    ///
-    /// The result of the query is delivered in a
-    /// [`KademliaEvent::QueryResult{QueryResult::GetClosestPeers}`].
-    pub fn get_closest_peers2<K: Send + 'static>(&mut self, key: K) -> ()
+    // prepare and generate a Query2 for iterative query.
+    fn prepare_iterative_query<K>(&mut self, key: K) -> Query2<kbucket::Key<K>>
         where
-            K: Borrow<[u8]> + Clone
+            K: Borrow<[u8]> + Clone + Send + 'static
     {
-        let info = QueryInfo::GetClosestPeers { key: key.borrow().to_vec() };
+        let local_id = self.kbuckets.local_key().preimage().clone();
         let target = kbucket::Key::new(key);
         let seeds = self.kbuckets.closest_keys(target.as_ref()).into_iter().collect();
-        let inner = QueryInner::new(info);
 
-        let mut query = Query2::new(target.clone(), &self.query_config,
+        let mut query = Query2::new(local_id, target, &self.query_config,
                                     self.swarm.clone().expect("must be there"),
                                     seeds);
 
-        // Now we have a query to run
-        query.run();
-
-        //self.queries.add_iter_closest(target.clone(), peers, inner);
-
-        ()
+        query
     }
 
-    fn run_query(&self, query: QueryInner) {
-
-    }
-
-    /// Initiates an iterative query for the closest peers to the given key.
-    ///
-    /// The result of the query is delivered in a
-    /// [`KademliaEvent::QueryResult{QueryResult::GetClosestPeers}`].
-    pub fn get_closest_peers<K>(&mut self, key: K) -> QueryId
+    /// Initiates an iterative lookup for the closest peers to the given key.
+    fn get_closest_peers<K, F>(&mut self, key: K, f: F) -> ()
         where
-            K: Borrow<[u8]> + Clone
+            K: Borrow<[u8]> + Clone + Send + 'static,
+            F: FnOnce(Vec<PeerId>) + Send + 'static
     {
-        let info = QueryInfo::GetClosestPeers { key: key.borrow().to_vec() };
-        let target = kbucket::Key::new(key);
-        let peers = self.kbuckets.closest_keys(&target);
-        let inner = QueryInner::new(info);
-        self.queries.add_iter_closest(target.clone(), peers, inner)
+        let mut q = self.prepare_iterative_query(key);
+
+        let query_fn = || {
+
+        };
+
+        let stop_fn = || {
+            return false;
+        };
+
+        q.run(query_fn, stop_fn, f);
+    }
+
+    /// Initiates an iterative lookup for the closest peers to the given key.
+    fn find_peer<K, F>(&mut self, key: K, f: F) -> ()
+        where
+            K: Borrow<[u8]> + Clone + Send + 'static,
+            F: FnOnce(Vec<PeerId>) + Send + 'static
+    {
+        let mut q = self.prepare_iterative_query(key);
+
+        let query_fn = || {
+
+        };
+
+        let stop_fn = || {
+            return false;
+        };
+
+        q.run(query_fn, stop_fn, f);
     }
 
     /// Performs a lookup for a record in the DHT.
@@ -1681,11 +1691,14 @@ impl<TStore> Kademlia<TStore>
     async fn on_control_command(&mut self, cmd: Option<ControlCommand>) -> Result<()> {
         match cmd {
             Some(ControlCommand::Lookup(key, reply)) => {
-                self.get_closest_peers(key);
-                let _ = reply.send(None);
+                self.get_closest_peers(key, |_peers| {
+                    let _ = reply.send(None);
+                });
             }
             Some(ControlCommand::FindPeer(peer_id, reply)) => {
-                let _ = reply.send(None);
+                self.find_peer(peer_id, |_peers| {
+                    let _ = reply.send(None);
+                });
             }
             Some(ControlCommand::FindProviders(key, reply)) => {
                 let _ = reply.send(None);

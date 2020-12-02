@@ -25,7 +25,7 @@ use async_std::task;
 use libp2prs_core::PeerId;
 use libp2prs_swarm::Control as SwarmControl;
 
-use crate::{ALPHA_VALUE, K_VALUE};
+use crate::{ALPHA_VALUE, K_VALUE, BETA_VALUE};
 use crate::kbucket::{Key, KeyBytes, Distance};
 
 mod peers;
@@ -36,6 +36,7 @@ use peers::fixed::FixedPeersIter;
 use futures::channel::mpsc;
 use futures::{StreamExt, SinkExt};
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
@@ -242,6 +243,9 @@ pub struct QueryConfig {
     /// See [`crate::behaviour::KademliaConfig::set_parallelism`] for details.
     pub parallelism: NonZeroUsize,
 
+    /// The number of peers closest to a target that must have responded for a query path to terminate.
+    pub beta_value: NonZeroUsize,
+
     /// Whether to use disjoint paths on iterative lookups.
     ///
     /// See [`crate::behaviour::KademliaConfig::disjoint_query_paths`] for details.
@@ -252,8 +256,9 @@ impl Default for QueryConfig {
     fn default() -> Self {
         QueryConfig {
             timeout: Duration::from_secs(60),
-            replication_factor: NonZeroUsize::new(K_VALUE.get()).expect("K_VALUE > 0"),
+            replication_factor: K_VALUE,
             parallelism: ALPHA_VALUE,
+            beta_value: BETA_VALUE,
             disjoint_query_paths: false,
         }
     }
@@ -276,30 +281,20 @@ struct Peer {
 }
 
 /// The state of a single `Peer`.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum PeerState {
     /// The peer has not yet been contacted.
     ///
     /// This is the starting state for every peer.
     NotContacted,
 
-    /// The iterator is waiting for a result from the peer.
-    Waiting(Instant),
+    /// The query has been started, waiting for a result from the peer.
+    Waiting,
 
     /// A result was not delivered for the peer within the configured timeout.
-    ///
-    /// The peer is not taken into account for the termination conditions
-    /// of the iterator until and unless it responds.
-    Unresponsive,
-
-    /// Obtaining a result from the peer has failed.
-    ///
-    /// This is a final state, reached as a result of a call to `on_failure`.
-    Failed,
+    Unreachable,
 
     /// A successful result from the peer has been delivered.
-    ///
-    /// This is a final state, reached as a result of a call to `on_success`.
     Succeeded,
 }
 
@@ -313,6 +308,8 @@ impl Peer {
 }
 
 pub(crate) struct Query2<'a, K> {
+    /// The local peer Id of myself.
+    local_id: PeerId,
     /// The key to be queried.
     key: K,
     /// The kad configurations for queries.
@@ -321,46 +318,123 @@ pub(crate) struct Query2<'a, K> {
     swarm: SwarmControl,
     /// The seed peers used to start the query.
     seeds: Vec<Key<PeerId>>,
+}
+
+pub(crate) enum QueryUpdate {
+    Queried {
+        source: PeerId,
+        heard: Vec<PeerId>,
+        duration: Duration
+    },
+    Unreachable(PeerId),
+}
+
+pub(crate) struct ClosestPeers<K> {
+    /// The target key.
+    target: K,
     /// All queried peers sorted by distance.
     closest_peers: BTreeMap<Distance, Peer>,
 }
 
-pub(crate) struct QueryUpdate {
-    source: PeerId,
-    heard: Option<Vec<Key<PeerId>>>,
-    unreachable: Option<PeerId>,
-    queried: Option<PeerId>,
-    timestamp: Instant
-}
-
-impl QueryUpdate {
-    fn new(source: PeerId, heard: Option<Vec<Key<PeerId>>>, unreachable: Option<PeerId>, queried: Option<PeerId>, timestamp: Instant) -> Self {
+impl<K> ClosestPeers<K>
+where
+    K: Into<KeyBytes> + AsRef<KeyBytes> + Clone + Send + 'static
+{
+    fn new(target: K) -> Self {
         Self {
-            source,
-            heard,
-            unreachable,
-            queried,
-            timestamp
+            target,
+            closest_peers: BTreeMap::new()
         }
+    }
+
+    // helper of calculating key and distance
+    fn key_n_distance(&self, peer_id: PeerId) -> (Key<PeerId>, Distance) {
+        let key= Key::from(peer_id);
+        let distance = key.distance(&self.target);
+
+        (key, distance)
+    }
+
+    // extend the btree with an iterator of peer_id
+    fn add_peers(&mut self, peers: Vec<PeerId>) {
+        // Incorporate the reported closer peers into the iterator.
+        for peer_id in peers {
+            let (key, distance) = self.key_n_distance(peer_id);
+            self.closest_peers.entry(distance).or_insert(Peer::new(key));
+            // // The iterator makes progress if the new peer is either closer to the target
+            // // than any peer seen so far (i.e. is the first entry), or the iterator did
+            // // not yet accumulate enough closest peers.
+            // progress = self.closest_peers.keys().next() == Some(&distance)
+            //     || num_closest < self.config.num_results.get();
+        }
+    }
+
+    fn peers_in_state(&mut self, state: PeerState, num: usize) -> impl Iterator<Item = &mut Peer> {
+        self.closest_peers.values_mut().filter(move |peer| peer.state == state).take(num)
+    }
+
+    fn peers_in_states(&self, states: Vec<PeerState>, num: usize) -> impl Iterator<Item = &Peer> {
+        self.closest_peers.values().filter(move |peer| states.contains(&peer.state)).take(num)
+    }
+
+    fn get_peer_state(&self, peer_id: &PeerId) -> Option<PeerState> {
+        let (_, distance) = self.key_n_distance(peer_id.clone());
+        self.closest_peers.get(&distance).map(|peer| peer.state)
+    }
+
+    fn set_peer_state(&mut self, peer_id: &PeerId, state: PeerState) {
+        let (_, distance) = self.key_n_distance(peer_id.clone());
+        self.closest_peers.get_mut(&distance).map(|peer| peer.state = state);
+    }
+
+    fn num_of_state(&self, state: PeerState) -> usize {
+        self.closest_peers.values().filter(|p| p.state == state).count()
+    }
+
+    fn num_of_states(&self, states: Vec<PeerState>) -> usize {
+        self.closest_peers.values().filter(|p| states.contains(&p.state)).count()
+    }
+
+    fn is_starved(&self) -> bool {
+        // starvation, if no peer to contact and no pending query
+        self.num_of_states(vec!(PeerState::NotContacted, PeerState::Waiting)) == 0
+    }
+
+    fn can_terminate(&self, beta_value: usize) -> bool {
+        let closest = self.closest_peers.values().filter(|peer| {
+            peer.state == PeerState::NotContacted ||
+                peer.state == PeerState::Waiting ||
+                peer.state == PeerState::Succeeded
+        }).take(beta_value);
+
+        for peer in closest {
+            if peer.state != PeerState::Succeeded {
+                return false;
+            }
+        }
+        true
     }
 }
 
-
 impl<'a, K> Query2<'a, K>
 where
-    K: Into<KeyBytes> + Clone + Send + 'static,
+    K: Into<KeyBytes> + Clone + Send + 'static
 {
-    pub(crate) fn new(key: K, config: &'a QueryConfig, swarm: SwarmControl, seeds: Vec<Key<PeerId>>) -> Self {
+    pub(crate) fn new(local_id: PeerId, key: K, config: &'a QueryConfig, swarm: SwarmControl, seeds: Vec<Key<PeerId>>) -> Self {
         Self {
+            local_id,
             key,
             config,
             swarm,
             seeds,
-            closest_peers: BTreeMap::default(),
         }
     }
 
-    pub(crate) fn run(&mut self) -> u32 {
+    pub(crate) fn run<TQueryFn, TStopFn, F>(&mut self, query_fn: TQueryFn, stop_fn: TStopFn, f: F) -> u32
+        where F: FnOnce(Vec<PeerId>) + Send + 'static,
+                TQueryFn: FnOnce() + Send + Copy + 'static,
+                TStopFn: FnOnce() -> bool + Send + Copy + 'static
+    {
         // check for empty seed peers
         if self.seeds.is_empty() {
             // TODO:
@@ -369,10 +443,15 @@ where
         let target = self.key.clone().into();
         let swarm = self.swarm.clone();
         let seeds = self.seeds.clone();
+        let alpha_value = self.config.parallelism.get();
+        let beta_value = self.config.beta_value.get();
+        let k_value = self.config.replication_factor.get();
         // TODO:
-        let myid = PeerId::random();
+        let local_id = PeerId::random();
+
+
         // the channel used to deliver the result of each jobs
-        let (mut tx, mut rx) = mpsc::channel(self.config.parallelism.get());
+        let (mut tx, mut rx) = mpsc::channel(alpha_value);
 
         // // put seeds into the query peers list, marked as state 'NotContacted'
         // for key in me.seeds {
@@ -380,54 +459,78 @@ where
         //     me.closest_peers.insert(distance, Peer::new(key));
         // }
 
+        // clostest_peers is used to receive the query results
+        let mut closest_peers = ClosestPeers::new(target.clone());
+
         // start a task for query
         task::spawn(async move {
 
-            // deliver the seeds to query task
-            tx.send(QueryUpdate::new(myid, Some(seeds), None, None, Instant::now())).await;
-
-            //let mut queries = me.closest_peers.values_mut();
+            let seeds = seeds.into_iter().map(|k| k.into_preimage()).collect();
+            // deliver the seeds to kick off the initial query
+            let _ = tx.send(QueryUpdate::Queried { source: local_id.clone(), heard: seeds, duration: Duration::from_secs(0) }).await;
 
             // starting iterative querying for all selected peers...
             loop {
-
+                // note that the first update comes from the initial seeds
                 let update = rx.next().await.expect("must");
-
-                // updating...
-
-                let peers = update.heard.unwrap();
-
-
-                // try spawning the queries, if there are no available peers to query then we won't spawn them
-                for peer in peers {
-                    //run_query_single(cause, p, ch)
+                // handle update, update the closest_peers, and update the kbuckets for new peer
+                // or dead peer detected
+                // TODO: check the state before setting state??
+                match update {
+                    QueryUpdate::Queried { source, mut heard, duration } => {
+                        // incorporate 'heard' into 'clostest_peers', marked as PeerState::NotContacted
+                        log::info!("successful query from {:},  heard {:?}", source, heard);
+                        // note we don't add myself
+                        heard.retain(|p| p != &local_id);
+                        closest_peers.add_peers(heard);
+                        closest_peers.set_peer_state(&source, PeerState::Succeeded);
+                        // signal the kbucket for new peer found
+                    },
+                    QueryUpdate::Unreachable(peer) => {
+                        // set to PeerState::Unreachable
+                        log::info!("unreachable peer {:?} detected", peer);
+                        closest_peers.set_peer_state(&peer, PeerState::Unreachable);
+                        // signal for dead peer detected
+                    }
                 }
-                // // start query job for the peers. the results will be sent back via the channel tx
-                //
-                // // then start 'peers.len()' jobs to do FindNode request
-                // let mut njobs :u32 = 0;
-                // for peer in queries {
-                //     log::info!("about to start query job for {:?}", peer);
-                //
-                //     njobs += 1;
-                //     tx.clone().send(5u32).await;
-                // }
 
-                // start query jobs according to the peers, one for each
-                // let mut result = vec!();
-                // for i in 0..njobs {
-                //     let r = rx.next().await.unwrap();
-                //
-                //     result.push(r);
-                // }
+                // check if query can be terminated?
+                // give the application logic a chance to terminate
+                if stop_fn() {
+                    break;
+                }
+                // starvation, if no peer to contact and no pending query
+                if closest_peers.is_starved() {
+                    //return true, LookupStarvation, nil
+                    log::info!("query starvation, if no peer to contact and no pending query");
+                    break;
+                }
+                // meet the k_value? meaning lookup completed
+                if closest_peers.can_terminate(beta_value) {
+                    //return true, LookupCompleted, nil
+                    log::info!("query got enough results, completed");
+                    break;
+                }
 
-                // log::info!("result={:?}", result);
+                // calculate the maximum number of queries we could be running
+                // Note: NumWaiting will be updated before invoking run_query_single()
+                let num_jobs = alpha_value.checked_sub(closest_peers.num_of_state(PeerState::Waiting)).unwrap();
 
-                //queries.
+                log::info!("iteratively querying, starting {} jobs", num_jobs);
 
-                // handle the results, break the loop or start iterative
-
+                let peer_iter = closest_peers.peers_in_state(PeerState::NotContacted, num_jobs);
+                for peer in peer_iter {
+                    //closest_peers.set_peer_state(&peer, PeerState::Waiting);
+                    peer.state = PeerState::Waiting;
+                    run_query_single(swarm.clone(), peer.key.preimage().clone(), tx.clone(), query_fn);
+                }
             }
+
+            // collect the query result
+            let wanted_states = vec!(PeerState::NotContacted, PeerState::Waiting, PeerState::Succeeded);
+            let peers = closest_peers.peers_in_states(wanted_states, k_value).map(|p|p.key.preimage().clone()).collect::<Vec<_>>();
+
+            f(peers);
         });
 
         0
@@ -678,3 +781,29 @@ impl QueryStats {
         }
     }
 }
+
+fn run_query_single<TQueryFn>(mut swarm: SwarmControl, peer: PeerId, mut tx: mpsc::Sender<QueryUpdate>, query_fn: TQueryFn)
+    where TQueryFn: FnOnce() + Send + 'static
+{
+    task::spawn(async move {
+        let startup = Instant::now();
+
+        // start the connection if need
+        let r = swarm.connect(peer.clone(), vec!()).await;
+        if r.is_err() {
+            let _ = tx.send(QueryUpdate::Unreachable(peer)).await;
+            return;
+        }
+
+        // get or create a msg sender, then run the query fn
+
+        query_fn();
+
+
+        let duration = startup.elapsed();
+
+        // send back to the query task
+        let _ = tx.send(QueryUpdate::Queried { source: peer, heard: vec![], duration }).await;
+    });
+}
+

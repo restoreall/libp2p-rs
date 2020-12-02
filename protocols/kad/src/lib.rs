@@ -116,6 +116,12 @@ pub const K_VALUE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(20) };
 /// The current value is `3`.
 pub const ALPHA_VALUE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(3) };
 
+/// The `beta` parameter of the Kademlia specification.
+///
+/// This parameter determines the number of peers closest to a target that must
+/// have responded for a query path to terminate.
+pub const BETA_VALUE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(3) };
+
 /// The possible errors of Kademlia.
 #[derive(Debug)]
 pub enum KadError {
