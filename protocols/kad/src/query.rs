@@ -37,6 +37,8 @@ use futures::channel::mpsc;
 use futures::{StreamExt, SinkExt};
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use crate::protocol::ProtocolEvent;
+use async_std::task::JoinHandle;
 
 
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
@@ -264,14 +266,40 @@ impl Default for QueryConfig {
     }
 }
 
-// struct QueryJob {
-//     /// The key to be queried.
-//     key: K,
-//     /// The controller of Swarm.
-//     swarm: SwarmControl,
-//
-//
-// }
+struct QueryJob<TQueryFn> {
+    swarm: SwarmControl,
+    peer: PeerId,
+    tx: mpsc::Sender<QueryUpdate>,
+    query_fn: TQueryFn
+}
+
+impl<TQueryFn> QueryJob<TQueryFn>
+    where TQueryFn: FnOnce() + Send + 'static
+{
+    fn run(self) -> JoinHandle<()> {
+        let mut me = self;
+        task::spawn(async move {
+            let startup = Instant::now();
+
+            // start the connection if need
+            let r = me.swarm.connect(me.peer.clone(), vec!()).await;
+            if r.is_err() {
+                let _ = me.tx.send(QueryUpdate::Unreachable(me.peer)).await;
+                return;
+            }
+
+            // get or create a msg sender, then run the query fn
+
+            (me.query_fn)();
+
+
+            let duration = startup.elapsed();
+
+            // send back to the query task
+            let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, heard: vec![], duration }).await;
+        })
+    }
+}
 
 /// Representation of a peer in the context of a iterator.
 #[derive(Debug, Clone)]
@@ -307,7 +335,7 @@ impl Peer {
     }
 }
 
-pub(crate) struct Query2<'a, K> {
+pub(crate) struct IterativeQuery<'a, K> {
     /// The local peer Id of myself.
     local_id: PeerId,
     /// The key to be queried.
@@ -318,6 +346,8 @@ pub(crate) struct Query2<'a, K> {
     swarm: SwarmControl,
     /// The seed peers used to start the query.
     seeds: Vec<Key<PeerId>>,
+    /// The channel tx used to send message to Kad main loop.\
+    event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>
 }
 
 pub(crate) enum QueryUpdate {
@@ -416,17 +446,18 @@ where
     }
 }
 
-impl<'a, K> Query2<'a, K>
+impl<'a, K> IterativeQuery<'a, K>
 where
     K: Into<KeyBytes> + Clone + Send + 'static
 {
-    pub(crate) fn new(local_id: PeerId, key: K, config: &'a QueryConfig, swarm: SwarmControl, seeds: Vec<Key<PeerId>>) -> Self {
+    pub(crate) fn new(local_id: PeerId, key: K, config: &'a QueryConfig, swarm: SwarmControl, seeds: Vec<Key<PeerId>>, event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
         Self {
             local_id,
             key,
             config,
             swarm,
             seeds,
+            event_tx
         }
     }
 
@@ -440,26 +471,19 @@ where
             // TODO:
         }
 
+        let local_id = self.local_id.clone();
         let target = self.key.clone().into();
         let swarm = self.swarm.clone();
         let seeds = self.seeds.clone();
         let alpha_value = self.config.parallelism.get();
         let beta_value = self.config.beta_value.get();
         let k_value = self.config.replication_factor.get();
-        // TODO:
-        let local_id = PeerId::random();
-
+        let mut event_tx = self.event_tx.clone();
 
         // the channel used to deliver the result of each jobs
         let (mut tx, mut rx) = mpsc::channel(alpha_value);
 
-        // // put seeds into the query peers list, marked as state 'NotContacted'
-        // for key in me.seeds {
-        //     let distance = target.distance(&key);
-        //     me.closest_peers.insert(distance, Peer::new(key));
-        // }
-
-        // clostest_peers is used to receive the query results
+        // closest_peers is used to record the query results
         let mut closest_peers = ClosestPeers::new(target.clone());
 
         // start a task for query
@@ -484,31 +508,33 @@ where
                         heard.retain(|p| p != &local_id);
                         closest_peers.add_peers(heard);
                         closest_peers.set_peer_state(&source, PeerState::Succeeded);
-                        // signal the kbucket for new peer found
+                        // TODO: signal the k-buckets for new peer found
+                        //let _ = event_tx.send(ProtocolEvent::PeerConnected(source)).await;
                     },
                     QueryUpdate::Unreachable(peer) => {
                         // set to PeerState::Unreachable
                         log::info!("unreachable peer {:?} detected", peer);
                         closest_peers.set_peer_state(&peer, PeerState::Unreachable);
-                        // signal for dead peer detected
+                        // TODO: signal for dead peer detected
                     }
                 }
 
                 // check if query can be terminated?
                 // give the application logic a chance to terminate
                 if stop_fn() {
+                    log::trace!("query stopped due to application logic");
                     break;
                 }
                 // starvation, if no peer to contact and no pending query
                 if closest_peers.is_starved() {
                     //return true, LookupStarvation, nil
-                    log::info!("query starvation, if no peer to contact and no pending query");
+                    log::trace!("query starvation, if no peer to contact and no pending query");
                     break;
                 }
                 // meet the k_value? meaning lookup completed
                 if closest_peers.can_terminate(beta_value) {
                     //return true, LookupCompleted, nil
-                    log::info!("query got enough results, completed");
+                    log::trace!("query got enough results, completed");
                     break;
                 }
 
@@ -522,7 +548,13 @@ where
                 for peer in peer_iter {
                     //closest_peers.set_peer_state(&peer, PeerState::Waiting);
                     peer.state = PeerState::Waiting;
-                    run_query_single(swarm.clone(), peer.key.preimage().clone(), tx.clone(), query_fn);
+                    let job = QueryJob {
+                        swarm: swarm.clone(),
+                        peer: peer.key.preimage().clone(),
+                        tx: tx.clone(),
+                        query_fn
+                    };
+                    job.run();
                 }
             }
 
@@ -780,30 +812,5 @@ impl QueryStats {
             end: std::cmp::max(self.end, other.end)
         }
     }
-}
-
-fn run_query_single<TQueryFn>(mut swarm: SwarmControl, peer: PeerId, mut tx: mpsc::Sender<QueryUpdate>, query_fn: TQueryFn)
-    where TQueryFn: FnOnce() + Send + 'static
-{
-    task::spawn(async move {
-        let startup = Instant::now();
-
-        // start the connection if need
-        let r = swarm.connect(peer.clone(), vec!()).await;
-        if r.is_err() {
-            let _ = tx.send(QueryUpdate::Unreachable(peer)).await;
-            return;
-        }
-
-        // get or create a msg sender, then run the query fn
-
-        query_fn();
-
-
-        let duration = startup.elapsed();
-
-        // send back to the query task
-        let _ = tx.send(QueryUpdate::Queried { source: peer, heard: vec![], duration }).await;
-    });
 }
 

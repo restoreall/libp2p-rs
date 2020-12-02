@@ -41,7 +41,7 @@ use libp2prs_traits::{ReadEx, WriteEx};
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType};
 use crate::control::{Control, ControlCommand};
 
-use crate::query::{QueryId, QueryPool, QueryConfig, Query, Query2, QueryStats};
+use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats, IterativeQuery};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
@@ -104,9 +104,9 @@ pub struct Kademlia<TStore> {
     // peer_tx: mpsc::UnboundedSender<PeerEvent>,
     // peer_rx: mpsc::UnboundedReceiver<PeerEvent>,
 
-    /// Used to handle the incoming Kad messages.
-    incoming_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>,
-    incoming_rx: mpsc::UnboundedReceiver<ProtocolEvent<u32>>,
+    /// Used to handle the incoming Kad events.
+    event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>,
+    event_rx: mpsc::UnboundedReceiver<ProtocolEvent<u32>>,
 
     /// Used to control the Kademlia.
     /// control_tx becomes the Control and control_rx is monitored by
@@ -354,14 +354,14 @@ impl<TStore> Kademlia<TStore>
             .provider_publication_interval
             .map(AddProviderJob::new);
 
-        let (incoming_tx, incoming_rx) = mpsc::unbounded();
+        let (event_tx, event_rx) = mpsc::unbounded();
         let (control_tx, control_rx) = mpsc::unbounded();
 
         Kademlia {
             store,
             swarm: None,
-            incoming_rx,
-            incoming_tx,
+            event_rx,
+            event_tx,
             control_tx,
             control_rx,
             kbuckets: KBucketsTable::new(local_key, config.kbucket_pending_timeout),
@@ -566,7 +566,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     // prepare and generate a Query2 for iterative query.
-    fn prepare_iterative_query<K>(&mut self, key: K) -> Query2<kbucket::Key<K>>
+    fn prepare_iterative_query<K>(&mut self, key: K) -> IterativeQuery<kbucket::Key<K>>
         where
             K: Borrow<[u8]> + Clone + Send + 'static
     {
@@ -574,9 +574,9 @@ impl<TStore> Kademlia<TStore>
         let target = kbucket::Key::new(key);
         let seeds = self.kbuckets.closest_keys(target.as_ref()).into_iter().collect();
 
-        let mut query = Query2::new(local_id, target, &self.query_config,
+        let query = IterativeQuery::new(local_id, target, &self.query_config,
                                     self.swarm.clone().expect("must be there"),
-                                    seeds);
+                                    seeds, self.event_tx.clone());
 
         query
     }
@@ -1461,7 +1461,7 @@ impl<TStore> Kademlia<TStore>
 
     /// Get the protocol handler of Kademlia, swarm will call "handle" func after stream negotiation.
     pub fn handler(&self) -> KadProtocolHandler {
-        KadProtocolHandler::new(self.incoming_tx.clone())
+        KadProtocolHandler::new(self.event_tx.clone())
     }
     /// Get the controller of Kademlia, which can be used to manipulate the Kad-DHT.
     pub fn control(&self) -> Control {
@@ -1491,9 +1491,9 @@ impl<TStore> Kademlia<TStore>
         //     }
         // }
         //
-        // if !self.incoming_rx.is_terminated() {
-        //     self.incoming_rx.close();
-        //     while self.incoming_rx.next().await.is_some() {
+        // if !self.event_rx.is_terminated() {
+        //     self.event_rx.close();
+        //     while self.event_rx.next().await.is_some() {
         //         // just drain
         //     }
         // }
@@ -1538,7 +1538,7 @@ impl<TStore> Kademlia<TStore>
                 // cmd = self.peer_rx.next() => {
                 //     self.handle_peer_event(cmd).await;
                 // }
-                evt = self.incoming_rx.next() => {
+                evt = self.event_rx.next() => {
                     self.handle_events(evt).await?;
                 }
                 cmd = self.control_rx.next() => {
