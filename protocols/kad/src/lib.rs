@@ -89,6 +89,7 @@ use libp2prs_core::PeerId;
 use std::fmt;
 use std::error::Error;
 use std::collections::HashSet;
+use libp2prs_swarm::SwarmError;
 
 /// The `k` parameter of the Kademlia specification.
 ///
@@ -149,6 +150,9 @@ pub enum KadError {
     /// Error while getting value.
     GetRecord(GetRecordError),
 
+    /// Error while decoding protobuf.
+    Decode,
+
     /// Received an answer that doesn't correspond to the request.
     UnexpectedMessage(&'static str),
     /// Received a request from an invalid source.
@@ -157,6 +161,8 @@ pub enum KadError {
     Unsupported(&'static str),
     /// I/O error in the substream.
     Io(std::io::Error),
+    /// Underlying Swarm error.
+    Swarm(SwarmError),
     /// Kademliad is Closed
     Closed(u32)
 }
@@ -180,3 +186,36 @@ impl Error for KadError {
         }
     }
 }
+
+
+impl From<std::io::Error> for KadError {
+    fn from(err: std::io::Error) -> Self {
+        KadError::Io(err)
+    }
+}
+
+impl From<SwarmError> for KadError {
+    fn from(err: SwarmError) -> Self {
+        KadError::Swarm(err)
+    }
+}
+//
+// impl From<TransportError> for KadError {
+//     fn from(err: TransportError) -> Self {
+//         KadError::Transport(err)
+//     }
+// }
+//
+// impl From<mpsc::SendError> for KadError {
+//     // TODO: make a error catelog for SendError
+//     fn from(_: mpsc::SendError) -> Self {
+//         KadError::Internal
+//     }
+// }
+//
+// impl From<oneshot::Canceled> for KadError {
+//     // TODO: make a error catelog for Canceled
+//     fn from(_: oneshot::Canceled) -> Self {
+//         KadError::Internal
+//     }
+// }

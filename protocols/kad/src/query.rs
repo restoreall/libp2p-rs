@@ -25,7 +25,7 @@ use async_std::task;
 use libp2prs_core::PeerId;
 use libp2prs_swarm::Control as SwarmControl;
 
-use crate::{ALPHA_VALUE, K_VALUE, BETA_VALUE};
+use crate::{ALPHA_VALUE, K_VALUE, BETA_VALUE, KadError, record};
 use crate::kbucket::{Key, KeyBytes, Distance};
 
 mod peers;
@@ -36,10 +36,12 @@ use peers::fixed::FixedPeersIter;
 use futures::channel::mpsc;
 use futures::{StreamExt, SinkExt};
 use std::collections::BTreeMap;
-use std::collections::btree_map::Entry;
-use crate::protocol::ProtocolEvent;
 use async_std::task::JoinHandle;
 
+use crate::protocol::{ProtocolEvent, KadPeer, send_find_node};
+use crate::protocol::ProtocolEvent::KadRequest;
+
+type Result<T> = std::result::Result<T, KadError>;
 
 /// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
 ///
@@ -266,38 +268,47 @@ impl Default for QueryConfig {
     }
 }
 
-struct QueryJob<TQueryFn> {
+struct QueryJob {
+    key: record::Key,
+    qt: QueryType,
     swarm: SwarmControl,
     peer: PeerId,
-    tx: mpsc::Sender<QueryUpdate>,
-    query_fn: TQueryFn
 }
 
-impl<TQueryFn> QueryJob<TQueryFn>
-    where TQueryFn: FnOnce() + Send + 'static
+impl QueryJob
 {
-    fn run(self) -> JoinHandle<()> {
+    async fn run(self) -> Result<()> {
         let mut me = self;
-        task::spawn(async move {
-            let startup = Instant::now();
+        let startup = Instant::now();
+        // start the connection if need
+        me.swarm.connect(me.peer.clone(), vec!()).await?;
+        let stream = me.swarm.new_stream(me.peer, vec!()).await?;
 
-            // start the connection if need
-            let r = me.swarm.connect(me.peer.clone(), vec!()).await;
-            if r.is_err() {
-                let _ = me.tx.send(QueryUpdate::Unreachable(me.peer)).await;
-                return;
+        let rsp = match me.qt {
+            QueryType::GetClosestPeers => {
+                send_find_node(stream, me.key).await?
             }
+            _ => {
+                panic!("shouldn't happen");
+            }
+        };
 
-            // get or create a msg sender, then run the query fn
+        Ok(())
 
-            (me.query_fn)();
+        // match r {
+        //     Ok(rsp) => {
+        //         //let new_peers= rsp.
+        //         let duration = startup.elapsed();
+        //         // TODO: update peerstore
+        //         let heard = new_peers.into_iter().map(|p| p.node_id).collect();
+        //         // send back to the query task
+        //         let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, heard, duration }).await;
+        //     },
+        //     Err(_) => {
+        //         let _ = me.tx.send(QueryUpdate::Unreachable(me.peer)).await;
+        //     }
+        // }
 
-
-            let duration = startup.elapsed();
-
-            // send back to the query task
-            let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, heard: vec![], duration }).await;
-        })
     }
 }
 
@@ -335,18 +346,20 @@ impl Peer {
     }
 }
 
-pub(crate) struct IterativeQuery<'a, K> {
+pub(crate) struct IterativeQuery<'a> {
+    /// The target to be queried.
+    key: record::Key,
+    /// The query type to be executed.
+    query_type: QueryType,
     /// The local peer Id of myself.
     local_id: PeerId,
-    /// The key to be queried.
-    key: K,
     /// The kad configurations for queries.
     config: &'a QueryConfig,
     /// The controller of Swarm.
     swarm: SwarmControl,
     /// The seed peers used to start the query.
     seeds: Vec<Key<PeerId>>,
-    /// The channel tx used to send message to Kad main loop.\
+    /// The channel tx used to send message to Kad main loop.
     event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>
 }
 
@@ -359,20 +372,18 @@ pub(crate) enum QueryUpdate {
     Unreachable(PeerId),
 }
 
-pub(crate) struct ClosestPeers<K> {
+pub(crate) struct ClosestPeers {
     /// The target key.
-    target: K,
+    target: Key<record::Key>,
     /// All queried peers sorted by distance.
     closest_peers: BTreeMap<Distance, Peer>,
 }
 
-impl<K> ClosestPeers<K>
-where
-    K: Into<KeyBytes> + AsRef<KeyBytes> + Clone + Send + 'static
+impl ClosestPeers
 {
-    fn new(target: K) -> Self {
+    fn new(key: record::Key) -> Self {
         Self {
-            target,
+            target: Key::new(key),
             closest_peers: BTreeMap::new()
         }
     }
@@ -385,17 +396,12 @@ where
         (key, distance)
     }
 
-    // extend the btree with an iterator of peer_id
+    // extend the btree with an vector of peer_id
     fn add_peers(&mut self, peers: Vec<PeerId>) {
-        // Incorporate the reported closer peers into the iterator.
+        // Incorporate the reported peers into the btree map.
         for peer_id in peers {
             let (key, distance) = self.key_n_distance(peer_id);
             self.closest_peers.entry(distance).or_insert(Peer::new(key));
-            // // The iterator makes progress if the new peer is either closer to the target
-            // // than any peer seen so far (i.e. is the first entry), or the iterator did
-            // // not yet accumulate enough closest peers.
-            // progress = self.closest_peers.keys().next() == Some(&distance)
-            //     || num_closest < self.config.num_results.get();
         }
     }
 
@@ -446,14 +452,28 @@ where
     }
 }
 
-impl<'a, K> IterativeQuery<'a, K>
-where
-    K: Into<KeyBytes> + Clone + Send + 'static
+/// Information about a running query.
+#[derive(Debug, Clone)]
+pub enum QueryType {
+    /// A query initiated by [`Kademlia::bootstrap`].
+    Bootstrap,
+    /// A query initiated by [`Kademlia::find_peer`].
+    FindPeer,
+    /// A query initiated by [`Kademlia::get_closest_peers`].
+    GetClosestPeers,
+    /// A query initiated by [`Kademlia::get_providers`].
+    GetProviders,
+    /// A query initiated by [`Kademlia::get_record`].
+    GetRecord,
+}
+
+impl<'a> IterativeQuery<'a>
 {
-    pub(crate) fn new(local_id: PeerId, key: K, config: &'a QueryConfig, swarm: SwarmControl, seeds: Vec<Key<PeerId>>, event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
+    pub(crate) fn new(query_type: QueryType, key: record::Key, local_id: PeerId, config: &'a QueryConfig, swarm: SwarmControl, seeds: Vec<Key<PeerId>>, event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
         Self {
-            local_id,
+            query_type,
             key,
+            local_id,
             config,
             swarm,
             seeds,
@@ -461,18 +481,19 @@ where
         }
     }
 
-    pub(crate) fn run<TQueryFn, TStopFn, F>(&mut self, query_fn: TQueryFn, stop_fn: TStopFn, f: F) -> u32
-        where F: FnOnce(Vec<PeerId>) + Send + 'static,
-                TQueryFn: FnOnce() + Send + Copy + 'static,
-                TStopFn: FnOnce() -> bool + Send + Copy + 'static
+    pub(crate) fn run<TStopFn, F>(&mut self, stop_fn: TStopFn, f: F) -> u32
+        where
+            F: FnOnce(Vec<PeerId>) + Send + 'static,
+            TStopFn: FnOnce() -> bool + Send + 'static + Clone
     {
         // check for empty seed peers
         if self.seeds.is_empty() {
             // TODO:
         }
 
+        let qt = self.query_type.clone();
+        let key = self.key.clone();
         let local_id = self.local_id.clone();
-        let target = self.key.clone().into();
         let swarm = self.swarm.clone();
         let seeds = self.seeds.clone();
         let alpha_value = self.config.parallelism.get();
@@ -484,7 +505,7 @@ where
         let (mut tx, mut rx) = mpsc::channel(alpha_value);
 
         // closest_peers is used to record the query results
-        let mut closest_peers = ClosestPeers::new(target.clone());
+        let mut closest_peers = ClosestPeers::new(key.clone());
 
         // start a task for query
         task::spawn(async move {
@@ -509,19 +530,20 @@ where
                         closest_peers.add_peers(heard);
                         closest_peers.set_peer_state(&source, PeerState::Succeeded);
                         // TODO: signal the k-buckets for new peer found
-                        //let _ = event_tx.send(ProtocolEvent::PeerConnected(source)).await;
+                        let _ = event_tx.send(ProtocolEvent::KadPeerFound(source, true)).await;
                     },
                     QueryUpdate::Unreachable(peer) => {
                         // set to PeerState::Unreachable
                         log::info!("unreachable peer {:?} detected", peer);
                         closest_peers.set_peer_state(&peer, PeerState::Unreachable);
                         // TODO: signal for dead peer detected
+                        let _ = event_tx.send(ProtocolEvent::KadPeerStopped(peer)).await;
                     }
                 }
 
                 // check if query can be terminated?
                 // give the application logic a chance to terminate
-                if stop_fn() {
+                if stop_fn.clone()() {
                     log::trace!("query stopped due to application logic");
                     break;
                 }
@@ -548,13 +570,23 @@ where
                 for peer in peer_iter {
                     //closest_peers.set_peer_state(&peer, PeerState::Waiting);
                     peer.state = PeerState::Waiting;
+                    let mut tx = tx.clone();
+                    let peer_id = peer.key.preimage().clone();
+
                     let job = QueryJob {
+                        key: key.clone(),
+                        qt: qt.clone(),
                         swarm: swarm.clone(),
-                        peer: peer.key.preimage().clone(),
-                        tx: tx.clone(),
-                        query_fn
+                        peer: peer_id.clone(),
                     };
-                    job.run();
+
+                    let _ = task::spawn(async move {
+                        let r = job.run().await;
+                        if r.is_err() {
+                            let _ = tx.send(QueryUpdate::Unreachable(peer_id)).await;
+                            return;
+                        }
+                    });
                 }
             }
 

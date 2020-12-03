@@ -41,7 +41,7 @@ use libp2prs_traits::{ReadEx, WriteEx};
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType};
 use crate::control::{Control, ControlCommand};
 
-use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats, IterativeQuery};
+use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats, IterativeQuery, QueryType};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
@@ -379,45 +379,6 @@ impl<TStore> Kademlia<TStore>
         }
     }
 
-    /// Gets an iterator over immutable references to all running queries.
-    pub fn iter_queries<'a>(&'a self) -> impl Iterator<Item = QueryRef<'a>> {
-        self.queries.iter().filter_map(|query|
-            if !query.is_finished() {
-                Some(QueryRef { query })
-            } else {
-                None
-            })
-    }
-
-    /// Gets an iterator over mutable references to all running queries.
-    pub fn iter_queries_mut<'a>(&'a mut self) -> impl Iterator<Item = QueryMut<'a>> {
-        self.queries.iter_mut().filter_map(|query|
-            if !query.is_finished() {
-                Some(QueryMut { query })
-            } else {
-                None
-            })
-    }
-
-    /// Gets an immutable reference to a running query, if it exists.
-    pub fn query<'a>(&'a self, id: &QueryId) -> Option<QueryRef<'a>> {
-        self.queries.get(id).and_then(|query|
-            if !query.is_finished() {
-                Some(QueryRef { query })
-            } else {
-                None
-            })
-    }
-
-    /// Gets a mutable reference to a running query, if it exists.
-    pub fn query_mut<'a>(&'a mut self, id: &QueryId) -> Option<QueryMut<'a>> {
-        self.queries.get_mut(id).and_then(|query|
-            if !query.is_finished() {
-                Some(QueryMut { query })
-            } else {
-                None
-            })
-    }
 /*
     /// Adds a known listen address of a peer participating in the DHT to the
     /// routing table.
@@ -565,58 +526,46 @@ impl<TStore> Kademlia<TStore>
         self.kbuckets.bucket(&kbucket::Key::new(key))
     }
 
-    // prepare and generate a Query2 for iterative query.
-    fn prepare_iterative_query<K>(&mut self, key: K) -> IterativeQuery<kbucket::Key<K>>
-        where
-            K: Borrow<[u8]> + Clone + Send + 'static
+    // prepare and generate a IterativeQuery for iterative query.
+    fn prepare_iterative_query(&mut self, qt: QueryType, key: record::Key) -> IterativeQuery
     {
         let local_id = self.kbuckets.local_key().preimage().clone();
-        let target = kbucket::Key::new(key);
-        let seeds = self.kbuckets.closest_keys(target.as_ref()).into_iter().collect();
+        let target = kbucket::Key::new(key.clone());
+        let seeds = self.kbuckets.closest_keys(&target).into_iter().collect();
 
-        let query = IterativeQuery::new(local_id, target, &self.query_config,
+        let query = IterativeQuery::new(qt, key, local_id, &self.query_config,
                                     self.swarm.clone().expect("must be there"),
-                                    seeds, self.event_tx.clone());
+                                        seeds, self.event_tx.clone());
 
         query
     }
 
     /// Initiates an iterative lookup for the closest peers to the given key.
-    fn get_closest_peers<K, F>(&mut self, key: K, f: F) -> ()
+    fn get_closest_peers<F>(&mut self, key: record::Key, f: F) -> ()
         where
-            K: Borrow<[u8]> + Clone + Send + 'static,
             F: FnOnce(Vec<PeerId>) + Send + 'static
     {
-        let mut q = self.prepare_iterative_query(key);
-
-        let query_fn = || {
-
-        };
+        let mut q = self.prepare_iterative_query(QueryType::GetClosestPeers, key);
 
         let stop_fn = || {
             return false;
         };
 
-        q.run(query_fn, stop_fn, f);
+        q.run(stop_fn, f);
     }
 
     /// Initiates an iterative lookup for the closest peers to the given key.
-    fn find_peer<K, F>(&mut self, key: K, f: F) -> ()
+    fn find_peer<F>(&mut self, key: record::Key, f: F) -> ()
         where
-            K: Borrow<[u8]> + Clone + Send + 'static,
             F: FnOnce(Vec<PeerId>) + Send + 'static
     {
-        let mut q = self.prepare_iterative_query(key);
-
-        let query_fn = || {
-
-        };
+        let mut q = self.prepare_iterative_query(QueryType::FindPeer, key);
 
         let stop_fn = || {
             return false;
         };
 
-        q.run(query_fn, stop_fn, f);
+        q.run(stop_fn, f);
     }
 
     /// Performs a lookup for a record in the DHT.
@@ -1076,7 +1025,7 @@ impl<TStore> Kademlia<TStore>
                     id: query_id,
                     stats: result.stats,
                     result: QueryResult::GetClosestPeers(Ok(
-                        GetClosestPeersOk { key, peers: result.peers.collect() }
+                        GetClosestPeersOk { key: key.to_vec(), peers: result.peers.collect() }
                     ))
                 })
             }
@@ -1290,7 +1239,7 @@ impl<TStore> Kademlia<TStore>
                     stats: result.stats,
                     result: QueryResult::GetClosestPeers(Err(
                         GetClosestPeersError::Timeout {
-                            key,
+                            key: key.to_vec(),
                             peers: result.peers.collect()
                         }
                     ))
@@ -1584,6 +1533,16 @@ impl<TStore> Kademlia<TStore>
         self.connection_updated(peer_id, None, NodeStatus::Disconnected);
     }
 
+    // handle a new Kad peer is found.
+    async fn handle_peer_found(&mut self, peer_id: PeerId, queried: bool) {
+        // TODO
+    }
+
+    // handle a Kad peer is dead.
+    async fn handle_peer_stopped(&mut self, peer_id: PeerId) {
+        // TODO
+    }
+
     // Check if stream / connection is closed.
     async fn handle_peer_eof(&mut self, rpid: PeerId, mut reader: Substream) {
         // let mut peer_dead_tx = self.peer_tx.clone();
@@ -1606,6 +1565,14 @@ impl<TStore> Kademlia<TStore>
             }
             Some(ProtocolEvent::PeerDisconnected(peer_id)) => {
                 self.handle_peer_disconnected(peer_id).await;
+                Ok(())
+            }
+            Some(ProtocolEvent::KadPeerFound(peer_id, queried)) => {
+                self.handle_peer_found(peer_id, queried).await;
+                Ok(())
+            }
+            Some(ProtocolEvent::KadPeerStopped(peer_id)) => {
+                self.handle_peer_stopped(peer_id).await;
                 Ok(())
             }
             Some(ProtocolEvent::KadRequest {
@@ -1696,7 +1663,7 @@ impl<TStore> Kademlia<TStore>
                 });
             }
             Some(ControlCommand::FindPeer(peer_id, reply)) => {
-                self.find_peer(peer_id, |_peers| {
+                self.find_peer(peer_id.into_bytes().into(), |_peers| {
                     let _ = reply.send(None);
                 });
             }
@@ -2150,7 +2117,7 @@ pub enum QueryInfo {
     },
 
     /// A query initiated by [`Kademlia::get_closest_peers`].
-    GetClosestPeers { key: Vec<u8> },
+    GetClosestPeers { key: record::Key },
 
     /// A query initiated by [`Kademlia::get_providers`].
     GetProviders {
@@ -2208,7 +2175,7 @@ impl QueryInfo {
     fn to_request(&self, _query_id: QueryId) -> KadRequestMsg {
         match &self {
             QueryInfo::Bootstrap { peer, .. } => KadRequestMsg::FindNode {
-                key: peer.clone().into_bytes(),
+                key: peer.clone().into_bytes().into(),
             },
             QueryInfo::GetClosestPeers { key, .. } => KadRequestMsg::FindNode {
                 key: key.clone(),

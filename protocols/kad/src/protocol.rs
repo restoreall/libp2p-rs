@@ -50,6 +50,8 @@ use libp2prs_swarm::substream::Substream;
 
 use crate::{dht_proto as proto, KadError};
 use crate::record::{self, Record};
+use crate::protocol::ProtocolEvent::KadRequest;
+use crate::kbucket::KeyBytes;
 
 /// The protocol name used for negotiating with multistream-select.
 pub const DEFAULT_PROTO_NAME: &[u8] = b"/ipfs/kad/1.0.0";
@@ -233,7 +235,7 @@ impl ProtocolHandler for KadProtocolHandler {
         log::trace!("Kad Handler receive packet from {}", source);
         loop {
             let packet = stream.read_one(self.max_packet_size).await?;
-            let request = proto::Message::decode(&packet[..])?;
+            let request = proto::Message::decode(&packet[..]).map_err(|_| KadError::Decode)?;
             log::trace!("Kad handler recv : {:?}", request);
 
             let request = proto_to_req_msg(request)?;
@@ -259,6 +261,33 @@ impl ProtocolHandler for KadProtocolHandler {
         Box::new(self.clone())
     }
 }
+
+async fn send_request(mut stream: Substream, request: KadRequestMsg) -> Result<KadResponseMsg, KadError>
+{
+    let proto_struct = req_msg_to_proto(request);
+    let mut buf = Vec::with_capacity(proto_struct.encoded_len());
+    proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
+    stream.write2(&buf).await?;
+
+    let packet = stream.read_one(4096).await?;
+    let response = proto::Message::decode(&packet[..]).map_err(|_| KadError::Decode)?;
+    log::trace!("Kad handler recv : {:?}", response);
+
+    let response = proto_to_resp_msg(response)?;
+
+    Ok(response)
+}
+
+pub(crate) async fn send_find_node(mut stream: Substream, key: record::Key) -> Result<Vec<KadPeer>, KadError>
+{
+    let req = KadRequestMsg::FindNode { key };
+    let rsp = send_request(stream, req).await?;
+    match rsp {
+        KadResponseMsg::FindNode { closer_peers } => Ok(closer_peers),
+        _ => Err(KadError::UnexpectedMessage("wrong message type received when FindNode"))
+    }
+}
+
 /*
 impl<C> ProtocolHandler<C> for KadProtocolHandler
 where
@@ -352,7 +381,7 @@ pub enum KadRequestMsg {
     /// returned is not specified, but should be around 20.
     FindNode {
         /// The key for which to locate the closest nodes.
-        key: Vec<u8>,
+        key: record::Key,
     },
 
     /// Same as `FindNode`, but should also return the entries of the local providers list for
@@ -428,7 +457,7 @@ fn req_msg_to_proto(kad_msg: KadRequestMsg) -> proto::Message {
         },
         KadRequestMsg::FindNode { key } => proto::Message {
             r#type: proto::message::MessageType::FindNode as i32,
-            key,
+            key: key.to_vec(),
             cluster_level_raw: 10,
             .. proto::Message::default()
         },
@@ -516,7 +545,7 @@ fn proto_to_req_msg(message: proto::Message) -> Result<KadRequestMsg, io::Error>
             Ok(KadRequestMsg::GetValue { key: record::Key::from(message.key) })
         }
         proto::message::MessageType::FindNode => {
-            Ok(KadRequestMsg::FindNode { key: message.key })
+            Ok(KadRequestMsg::FindNode { key: record::Key::from(message.key) })
         }
         proto::message::MessageType::GetProviders => {
             Ok(KadRequestMsg::GetProviders { key: record::Key::from(message.key)})
@@ -758,6 +787,16 @@ pub enum ProtocolEvent<TUserData> {
     ///
     /// This notification comes from Protocol Notifiee trait.
     PeerDisconnected(PeerId),
+    /// A new peer found when trying to lookup a 'Key' or receiving a
+    /// query from peer.
+    ///
+    /// This notification comes from either a query or a forced activity.
+    /// The 'bool' parameter 'true' means if it comes from a query.
+    KadPeerFound(PeerId, bool),
+    /// A Kad peer stopped when it is being connected/queried.
+    ///
+    /// This notification comes from either a query activity.
+    KadPeerStopped(PeerId),
     /// The configured protocol name has been confirmed by the peer through
     /// a successfully negotiated substream.
     ///
