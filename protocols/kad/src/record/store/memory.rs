@@ -315,7 +315,7 @@ mod tests {
         let prv = PeerId::random();
         let rec = ProviderRecord::new(key, prv, Vec::new());
         match store.add_provider(rec) {
-            Err(Error::MaxProvidedKeys) => {}
+            Err(KadError::MaxProvidedKeys) => {}
             _ => panic!("Unexpected result"),
         }
     }

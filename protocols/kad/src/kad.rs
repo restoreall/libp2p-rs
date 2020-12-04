@@ -41,7 +41,7 @@ use libp2prs_traits::{ReadEx, WriteEx};
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType};
 use crate::control::{Control, ControlCommand};
 
-use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats, IterativeQuery, QueryType};
+use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats, IterativeQuery, QueryType, QueryResult2};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
@@ -543,29 +543,21 @@ impl<TStore> Kademlia<TStore>
     /// Initiates an iterative lookup for the closest peers to the given key.
     fn get_closest_peers<F>(&mut self, key: record::Key, f: F) -> ()
         where
-            F: FnOnce(Vec<PeerId>) + Send + 'static
+            F: FnOnce(Result<QueryResult2>) + Send + 'static
     {
         let mut q = self.prepare_iterative_query(QueryType::GetClosestPeers, key);
 
-        let stop_fn = || {
-            return false;
-        };
-
-        q.run(stop_fn, f);
+        q.run(f);
     }
 
     /// Initiates an iterative lookup for the closest peers to the given key.
     fn find_peer<F>(&mut self, key: record::Key, f: F) -> ()
         where
-            F: FnOnce(Vec<PeerId>) + Send + 'static
+            F: FnOnce(Result<QueryResult2>) + Send + 'static
     {
         let mut q = self.prepare_iterative_query(QueryType::FindPeer, key);
 
-        let stop_fn = || {
-            return false;
-        };
-
-        q.run(stop_fn, f);
+        q.run(f);
     }
 
     /// Performs a lookup for a record in the DHT.
@@ -1658,17 +1650,17 @@ impl<TStore> Kademlia<TStore>
     async fn on_control_command(&mut self, cmd: Option<ControlCommand>) -> Result<()> {
         match cmd {
             Some(ControlCommand::Lookup(key, reply)) => {
-                self.get_closest_peers(key, |_peers| {
-                    let _ = reply.send(None);
+                self.get_closest_peers(key, |r| {
+                    let _ = reply.send(r.map(|r|r.closest_peers));
                 });
             }
             Some(ControlCommand::FindPeer(peer_id, reply)) => {
-                self.find_peer(peer_id.into_bytes().into(), |_peers| {
-                    let _ = reply.send(None);
+                self.find_peer(peer_id.into_bytes().into(), |r| {
+                    let _ = reply.send(r.map(|r|r.found_peer));
                 });
             }
             Some(ControlCommand::FindProviders(key, reply)) => {
-                let _ = reply.send(None);
+                let _ = reply.send(Err(KadError::NoKnownPeers));
             }
             Some(ControlCommand::Providing(key, reply)) => {
                 let _ = reply.send(());

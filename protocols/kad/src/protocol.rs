@@ -288,6 +288,16 @@ pub(crate) async fn send_find_node(mut stream: Substream, key: record::Key) -> R
     }
 }
 
+pub(crate) async fn send_get_providers(mut stream: Substream, key: record::Key) -> Result<(Vec<KadPeer>, Vec<KadPeer>), KadError>
+{
+    let req = KadRequestMsg::GetProviders { key };
+    let rsp = send_request(stream, req).await?;
+    match rsp {
+        KadResponseMsg::GetProviders { closer_peers, provider_peers } => Ok((closer_peers, provider_peers)),
+        _ => Err(KadError::UnexpectedMessage("wrong message type received when GetProviders"))
+    }
+}
+
 /*
 impl<C> ProtocolHandler<C> for KadProtocolHandler
 where

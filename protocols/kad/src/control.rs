@@ -22,21 +22,23 @@ use futures::channel::{mpsc, oneshot};
 use futures::SinkExt;
 use libp2prs_core::{PeerId, Multiaddr};
 
-use crate::record;
+use crate::{record, KadError};
 use crate::query::QueryId;
+use crate::protocol::KadPeer;
+
+type Result<T> = std::result::Result<T, KadError>;
 
 pub(crate) enum ControlCommand {
-    /// Lookups the closer peers with given ID, returns a list of peer info
-    /// with relevant addresses.
-    Lookup(record::Key, oneshot::Sender<Option<Vec<Multiaddr>>>),
+    /// Lookups the closer peers with given ID, returns a list of peer Id.
+    Lookup(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Searches for a peer with given ID, returns a list of peer info
     /// with relevant addresses.
-    FindPeer(PeerId, oneshot::Sender<Option<Vec<Multiaddr>>>),
+    FindPeer(PeerId, oneshot::Sender<Result<Option<KadPeer>>>),
     /// Lookup peers who are able to provide a given key.
     ///
     /// When count is 0, this method will return an unbounded number of
     /// results.
-    FindProviders(record::Key, oneshot::Sender<Option<QueryId>>),
+    FindProviders(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Provide adds the given key to the content routing system.
     /// It also announces it, otherwise it is just kept in the local
     /// accounting of which objects are being provided.
@@ -61,7 +63,7 @@ impl Control {
     }
 
     /// Lookup the closer peers with the given key.
-    pub async fn lookup(&mut self, key: record::Key) -> Option<Vec<Multiaddr>> {
+    pub async fn lookup(&mut self, key: record::Key) -> Result<Vec<KadPeer>> {
         let (tx, rx) = oneshot::channel();
         self.control_sender
             .send(ControlCommand::Lookup(key, tx))
@@ -70,7 +72,7 @@ impl Control {
         rx.await.expect("lookup")
     }
 
-    pub async fn find_peer(&mut self, peer_id: &PeerId) -> Option<Vec<Multiaddr>> {
+    pub async fn find_peer(&mut self, peer_id: &PeerId) -> Result<Option<KadPeer>> {
         let (tx, rx) = oneshot::channel();
         self.control_sender
             .send(ControlCommand::FindPeer(peer_id.clone(), tx))
