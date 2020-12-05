@@ -84,10 +84,10 @@ pub use addresses::Addresses;
 pub use record::{store, Record, ProviderRecord};
 
 use std::num::NonZeroUsize;
-use libp2prs_core::PeerId;
 use std::fmt;
 use std::error::Error;
-use std::collections::HashSet;
+
+use libp2prs_core::PeerId;
 use libp2prs_swarm::SwarmError;
 
 /// The `k` parameter of the Kademlia specification.

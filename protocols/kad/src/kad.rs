@@ -22,7 +22,6 @@ use std::time::{Duration, Instant};
 use std::collections::{HashMap, VecDeque, HashSet};
 use std::num::NonZeroUsize;
 use std::borrow::Borrow;
-use std::fmt;
 use smallvec::SmallVec;
 use fnv::{FnvHashSet, FnvHashMap};
 
@@ -43,11 +42,11 @@ use libp2prs_traits::{ReadEx, WriteEx};
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig};
 use crate::control::{Control, ControlCommand};
 
-use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats, IterativeQuery, QueryType, QueryResult, PeerRecord};
+use crate::query::{QueryId, QueryPool, QueryConfig, QueryStats, IterativeQuery, QueryType, PeerRecord};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
-use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord, K_VALUE};
+use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
 
 type Result<T> = std::result::Result<T, KadError>;
 

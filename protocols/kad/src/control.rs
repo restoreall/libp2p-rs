@@ -20,10 +20,10 @@
 
 use futures::channel::{mpsc, oneshot};
 use futures::SinkExt;
-use libp2prs_core::{PeerId, Multiaddr};
+use libp2prs_core::PeerId;
 
 use crate::{record, KadError};
-use crate::query::{QueryId, PeerRecord};
+use crate::query::PeerRecord;
 use crate::protocol::KadPeer;
 
 type Result<T> = std::result::Result<T, KadError>;

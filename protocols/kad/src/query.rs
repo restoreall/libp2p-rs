@@ -19,7 +19,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 use std::{time::Instant, time::Duration, num::NonZeroUsize};
-use either::Either;
 use fnv::FnvHashMap;
 use async_std::task;
 use libp2prs_core::PeerId;
@@ -39,7 +38,6 @@ use std::collections::BTreeMap;
 use async_std::task::JoinHandle;
 
 use crate::protocol::{ProtocolEvent, KadPeer, KadConnectionType, KademliaProtocolConfig, KadMessageSender};
-use crate::protocol::ProtocolEvent::KadRequest;
 
 type Result<T> = std::result::Result<T, KadError>;
 
