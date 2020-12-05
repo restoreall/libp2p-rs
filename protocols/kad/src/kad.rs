@@ -41,7 +41,7 @@ use libp2prs_traits::{ReadEx, WriteEx};
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType};
 use crate::control::{Control, ControlCommand};
 
-use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats, IterativeQuery, QueryType, QueryResult2};
+use crate::query::{QueryId, QueryPool, QueryConfig, Query, QueryStats, IterativeQuery, QueryType, QueryResult2, PeerRecord};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
@@ -541,7 +541,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     /// Initiates an iterative lookup for the closest peers to the given key.
-    fn get_closest_peers<F>(&mut self, key: record::Key, f: F) -> ()
+    fn get_closest_peers<F>(&mut self, key: record::Key, f: F)
         where
             F: FnOnce(Result<QueryResult2>) + Send + 'static
     {
@@ -551,7 +551,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     /// Initiates an iterative lookup for the closest peers to the given key.
-    fn find_peer<F>(&mut self, key: record::Key, f: F) -> ()
+    fn find_peer<F>(&mut self, key: record::Key, f: F)
         where
             F: FnOnce(Result<QueryResult2>) + Send + 'static
     {
@@ -564,31 +564,40 @@ impl<TStore> Kademlia<TStore>
     ///
     /// The result of this operation is delivered in a
     /// [`KademliaEvent::QueryResult{QueryResult::GetRecord}`].
-    pub fn get_record(&mut self, key: &record::Key, quorum: Quorum) -> QueryId {
-        let quorum = quorum.eval(self.queries.config().replication_factor);
-        let mut records = Vec::with_capacity(quorum.get());
+    fn get_record<F>(&mut self, key: record::Key, quorum: usize, f: F)
+        where
+            F: FnOnce(Result<QueryResult2>) + Send + 'static
+    {
+        let quorum = quorum.min(self.queries.config().replication_factor.get());
+        let mut records = Vec::with_capacity(quorum);
 
-        if let Some(record) = self.store.get(key) {
+        if let Some(record) = self.store.get(&key) {
             if record.is_expired(Instant::now()) {
-                self.store.remove(key)
+                self.store.remove(&key)
             } else {
-                records.push(PeerRecord{ peer: None, record: record.into_owned()});
+                records.push(PeerRecord { peer: None, record: record.into_owned()});
             }
         }
 
-        let done = records.len() >= quorum.get();
-        let target = kbucket::Key::new(key.clone());
-        let info = QueryInfo::GetRecord { key: key.clone(), records, quorum, cache_at: None };
-        let peers = self.kbuckets.closest_keys(&target);
-        let inner = QueryInner::new(info);
-        let id = self.queries.add_iter_closest(target.clone(), peers, inner); // (*)
+        let needed = records.len() - quorum;
+        if needed > 0 {
+            // ok, we have enough, simply return
+            // TODO:
+            f(Ok(QueryResult2 {
+                closest_peers: vec![],
+                found_peer: None,
+                providers: vec![],
+                records
+            }));
 
-        // Instantly finish the query if we already have enough records.
-        if done {
-            self.queries.get_mut(&id).expect("by (*)").finish();
+
+        } else {
+            let mut q = self.prepare_iterative_query(QueryType::GetRecord(needed), key);
+
+            q.run(f);
+
         }
 
-        id
     }
 
     /// Stores a record in the DHT.
@@ -1706,16 +1715,6 @@ impl Quorum {
             Quorum::N(n) => NonZeroUsize::min(total, *n)
         }
     }
-}
-
-/// A record either received by the given peer or retrieved from the local
-/// record store.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerRecord {
-    /// The peer from whom the record was received. `None` if the record was
-    /// retrieved from local storage.
-    pub peer: Option<PeerId>,
-    pub record: Record,
 }
 
 //////////////////////////////////////////////////////////////////////////////

@@ -371,12 +371,23 @@ pub(crate) enum QueryUpdate {
     //Timeout,
 }
 
+/// A record either received by the given peer or retrieved from the local
+/// record store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRecord {
+    /// The peer from whom the record was received. `None` if the record was
+    /// retrieved from local storage.
+    pub peer: Option<PeerId>,
+    pub record: record::Record,
+}
+
+
 /// The query result returned by IterativeQuery.
 pub(crate) struct QueryResult2 {
     pub(crate) closest_peers: Vec<KadPeer>,
     pub(crate) found_peer: Option<KadPeer>,
     pub(crate) providers: Vec<KadPeer>,
-    pub(crate) record: Option<record::Record>,
+    pub(crate) records: Vec<PeerRecord>,
 }
 
 pub(crate) struct ClosestPeers {
@@ -476,9 +487,11 @@ pub enum QueryType {
     /// A query initiated by [`Kademlia::get_closest_peers`].
     GetClosestPeers,
     /// A query initiated by [`Kademlia::get_providers`].
+    /// 'usize' means how many providers is needed before completing.
     GetProviders(usize),
     /// A query initiated by [`Kademlia::get_record`].
-    GetRecord,
+    /// 'usize' means quorum needed by get_record.
+    GetRecord(usize),
 }
 
 impl<'a> IterativeQuery<'a>
@@ -525,7 +538,7 @@ impl<'a> IterativeQuery<'a>
             closest_peers: vec![],
             found_peer: None,
             providers: vec![],
-            record: None
+            records: vec![],
         };
 
         // start a task for query
@@ -556,7 +569,7 @@ impl<'a> IterativeQuery<'a>
                         closest_peers.set_peer_state(&source, PeerState::Succeeded);
 
                         // TODO: signal the k-buckets for new peer found
-                        let _ = event_tx.send(ProtocolEvent::KadPeerFound(source, true)).await;
+                        let _ = event_tx.send(ProtocolEvent::KadPeerFound(source.clone(), true)).await;
 
                         // handle different query type, check if we are done querying
                         match qt {
@@ -582,11 +595,15 @@ impl<'a> IterativeQuery<'a>
                                     break;
                                 }
                             }
-                            QueryType::GetRecord => {
-                                if record.is_some() {
-                                    log::info!("GetRecord: record found {:?} key={:?}", record, key);
-                                    query_results.record = record;
-                                    break;
+                            QueryType::GetRecord(quorum) => {
+                                if let Some(record) = record {
+                                    log::trace!("GetRecord: record found {:?} key={:?}", record, key);
+                                    query_results.records.push(PeerRecord { peer: Some(source), record });
+
+                                    if query_results.records.len() > quorum {
+                                        log::info!("GetRecord: got enough records for key={:?}", key);
+                                        break;
+                                    }
                                 }
                             }
                         }
