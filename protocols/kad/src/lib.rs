@@ -82,7 +82,6 @@ pub use addresses::Addresses;
 //pub use query::QueryId;
 //pub use protocol::KadConnectionType;
 pub use record::{store, Record, ProviderRecord};
-pub use kad::{BootstrapError, GetClosestPeersError, AddProviderError, GetProvidersError, PutRecordError, GetRecordError};
 
 use std::num::NonZeroUsize;
 use libp2prs_core::PeerId;
@@ -138,17 +137,17 @@ pub enum KadError {
     /// Error while trying to perform the upgrade.
     Upgrade,
     /// Error while bootstrapping Kademlia-DHT.
-    Bootstrap(BootstrapError),
+    Bootstrap,
     /// Error while looking up closest peers.
-    GetClosestPeers(GetClosestPeersError),
+    GetClosestPeers,
     /// Error while finding providers.
-    GetProviders(GetProvidersError),
+    GetProviders,
     /// Error while providing.
-    AddProvider(AddProviderError),
+    AddProvider,
     /// Error while putting value.
-    PutRecord(PutRecordError),
+    PutRecord,
     /// Error while getting value.
-    GetRecord(GetRecordError),
+    GetRecord,
 
     /// Error while decoding protobuf.
     Decode,

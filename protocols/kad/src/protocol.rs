@@ -47,11 +47,10 @@ use libp2prs_core::upgrade::UpgradeInfo;
 use libp2prs_swarm::protocol_handler::{ProtocolHandler, Notifiee, IProtocolHandler};
 use libp2prs_swarm::connection::Connection;
 use libp2prs_swarm::substream::Substream;
+use libp2prs_swarm::Control as SwarmControl;
 
 use crate::{dht_proto as proto, KadError};
 use crate::record::{self, Record};
-use crate::protocol::ProtocolEvent::KadRequest;
-use crate::kbucket::KeyBytes;
 
 /// The protocol name used for negotiating with multistream-select.
 pub const DEFAULT_PROTO_NAME: &[u8] = b"/ipfs/kad/1.0.0";
@@ -154,16 +153,47 @@ type ProtocolId = &'static [u8];
 
 
 
-/// Configuration for a Kademlia connection upgrade. When applied to a connection, turns this
-/// connection into a `Stream + Sink` whose items are of type `KadRequestMsg` and `KadResponseMsg`.
-// TODO: if, as suspected, we can confirm with Protocol Labs that each open Kademlia substream does
-//       only one request, then we can change the output of the `InboundUpgrade` and
-//       `OutboundUpgrade` to be just a single message
+/// Configuration for a Kademlia protocol handler.
 #[derive(Debug, Clone)]
-pub struct KadProtocolHandler {
+pub struct KademliaProtocolConfig {
     protocol_name: ProtocolId,
     /// Maximum allowed size of a packet.
     max_packet_size: usize,
+}
+
+impl KademliaProtocolConfig {
+    /// Returns the configured protocol name.
+    pub fn protocol_name(&self) -> ProtocolId {
+        self.protocol_name.clone()
+    }
+
+    /// Modifies the protocol name used on the wire. Can be used to create incompatibilities
+    /// between networks on purpose.
+    pub fn set_protocol_name(&mut self, name: ProtocolId) {
+        self.protocol_name = name;
+    }
+
+    /// Modifies the maximum allowed size of a single Kademlia packet.
+    pub fn set_max_packet_size(&mut self, size: usize) {
+        self.max_packet_size = size;
+    }
+}
+
+impl Default for KademliaProtocolConfig {
+    fn default() -> Self {
+        KademliaProtocolConfig {
+            protocol_name: DEFAULT_PROTO_NAME,
+            max_packet_size: DEFAULT_MAX_PACKET_SIZE,
+        }
+    }
+}
+
+
+/// The Protocol Handler of Kademlia DHT.
+#[derive(Debug, Clone)]
+pub struct KadProtocolHandler {
+    /// The configuration of the protocol handler.
+    config: KademliaProtocolConfig,
     /// If false, we deny incoming requests.
     allow_listening: bool,
     /// Time after which we close an idle connection.
@@ -174,10 +204,9 @@ pub struct KadProtocolHandler {
 
 impl KadProtocolHandler {
     /// Make a new KadProtocolHandler.
-    pub fn new (message_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
+    pub fn new (config: KademliaProtocolConfig, message_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
         KadProtocolHandler {
-            protocol_name: DEFAULT_PROTO_NAME,
-            max_packet_size: DEFAULT_MAX_PACKET_SIZE,
+            config,
             allow_listening: false,
             idle_timeout: Duration::from_secs(10),
             message_tx,
@@ -186,28 +215,21 @@ impl KadProtocolHandler {
 
     /// Returns the configured protocol name.
     pub fn protocol_name(&self) -> &[u8] {
-        &self.protocol_name
+        &self.config.protocol_name
     }
 
     /// Modifies the maximum allowed size of a single Kademlia packet.
     pub fn set_max_packet_size(&mut self, size: usize) {
-        self.max_packet_size = size;
+        self.config.max_packet_size = size;
     }
 }
 
-// impl Default for KadProtocolHandler {
-//     fn default() -> Self {
-//         KadProtocolHandler::new {
-//
-//         }
-//     }
-// }
-//
+
 impl UpgradeInfo for KadProtocolHandler {
     type Info = ProtocolId;
 
     fn protocol_info(&self) -> Vec<Self::Info> {
-        vec![self.protocol_name]
+        vec![self.config.protocol_name]
     }
 }
 
@@ -234,7 +256,7 @@ impl ProtocolHandler for KadProtocolHandler {
         let source = stream.remote_peer();
         log::trace!("Kad Handler receive packet from {}", source);
         loop {
-            let packet = stream.read_one(self.max_packet_size).await?;
+            let packet = stream.read_one(self.config.max_packet_size).await?;
             let request = proto::Message::decode(&packet[..]).map_err(|_| KadError::Decode)?;
             log::trace!("Kad handler recv : {:?}", request);
 
@@ -262,41 +284,76 @@ impl ProtocolHandler for KadProtocolHandler {
     }
 }
 
-async fn send_request(mut stream: Substream, request: KadRequestMsg) -> Result<KadResponseMsg, KadError>
-{
-    let proto_struct = req_msg_to_proto(request);
-    let mut buf = Vec::with_capacity(proto_struct.encoded_len());
-    proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
-    stream.write2(&buf).await?;
-
-    let packet = stream.read_one(4096).await?;
-    let response = proto::Message::decode(&packet[..]).map_err(|_| KadError::Decode)?;
-    log::trace!("Kad handler recv : {:?}", response);
-
-    let response = proto_to_resp_msg(response)?;
-
-    Ok(response)
+/// Kademlia message sender.
+///
+/// The message sender actually sends a Kad request message and waits for the correct response
+/// message.
+pub(crate) struct KadMessageSender {
+    stream: Substream,
+    config: KademliaProtocolConfig,
 }
 
-pub(crate) async fn send_find_node(mut stream: Substream, key: record::Key) -> Result<Vec<KadPeer>, KadError>
-{
-    let req = KadRequestMsg::FindNode { key };
-    let rsp = send_request(stream, req).await?;
-    match rsp {
-        KadResponseMsg::FindNode { closer_peers } => Ok(closer_peers),
-        _ => Err(KadError::UnexpectedMessage("wrong message type received when FindNode"))
+impl KadMessageSender {
+    pub(crate) async fn build(mut swarm: SwarmControl, peer: PeerId, config: KademliaProtocolConfig) -> Result<Self, KadError> {
+        let stream = swarm.new_stream(peer, vec!(config.protocol_name())).await?;
+        Ok(Self {
+            stream,
+            config
+        })
     }
+
+    pub(crate) async fn close(&mut self) -> Result<(), KadError> {
+        self.stream.close2().await.map_err(io::Error::into)
+    }
+
+    async fn send_request(&mut self, request: KadRequestMsg) -> Result<KadResponseMsg, KadError>
+    {
+        let proto_struct = req_msg_to_proto(request);
+        let mut buf = Vec::with_capacity(proto_struct.encoded_len());
+        proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
+        self.stream.write2(&buf).await?;
+
+        let packet = self.stream.read_one(4096).await?;
+        let response = proto::Message::decode(&packet[..]).map_err(|_| KadError::Decode)?;
+        log::trace!("Kad handler recv : {:?}", response);
+
+        let response = proto_to_resp_msg(response)?;
+
+        Ok(response)
+    }
+
+    pub(crate) async fn send_find_node(&mut self, key: record::Key) -> Result<Vec<KadPeer>, KadError>
+    {
+        let req = KadRequestMsg::FindNode { key };
+        let rsp = self.send_request(req).await?;
+        match rsp {
+            KadResponseMsg::FindNode { closer_peers } => Ok(closer_peers),
+            _ => Err(KadError::UnexpectedMessage("wrong message type received when FindNode"))
+        }
+    }
+
+    pub(crate) async fn send_get_providers(&mut self, key: record::Key) -> Result<(Vec<KadPeer>, Vec<KadPeer>), KadError>
+    {
+        let req = KadRequestMsg::GetProviders { key };
+        let rsp = self.send_request(req).await?;
+        match rsp {
+            KadResponseMsg::GetProviders { closer_peers, provider_peers } => Ok((closer_peers, provider_peers)),
+            _ => Err(KadError::UnexpectedMessage("wrong message type received when GetProviders"))
+        }
+    }
+
+    pub(crate) async fn send_get_value(&mut self, key: record::Key) -> Result<(Vec<KadPeer>, Option<Record>), KadError>
+    {
+        let req = KadRequestMsg::GetValue { key };
+        let rsp = self.send_request(req).await?;
+        match rsp {
+            KadResponseMsg::GetValue { record, closer_peers } => Ok((closer_peers, record)),
+            _ => Err(KadError::UnexpectedMessage("wrong message type received when GetValue"))
+        }
+    }
+
 }
 
-pub(crate) async fn send_get_providers(mut stream: Substream, key: record::Key) -> Result<(Vec<KadPeer>, Vec<KadPeer>), KadError>
-{
-    let req = KadRequestMsg::GetProviders { key };
-    let rsp = send_request(stream, req).await?;
-    match rsp {
-        KadResponseMsg::GetProviders { closer_peers, provider_peers } => Ok((closer_peers, provider_peers)),
-        _ => Err(KadError::UnexpectedMessage("wrong message type received when GetProviders"))
-    }
-}
 
 /*
 impl<C> ProtocolHandler<C> for KadProtocolHandler

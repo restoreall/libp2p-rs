@@ -38,7 +38,7 @@ use futures::{StreamExt, SinkExt};
 use std::collections::BTreeMap;
 use async_std::task::JoinHandle;
 
-use crate::protocol::{ProtocolEvent, KadPeer, KadConnectionType, send_find_node, send_get_providers};
+use crate::protocol::{ProtocolEvent, KadPeer, KadConnectionType, KademliaProtocolConfig, KadMessageSender};
 use crate::protocol::ProtocolEvent::KadRequest;
 
 type Result<T> = std::result::Result<T, KadError>;
@@ -272,6 +272,7 @@ struct QueryJob {
     key: record::Key,
     qt: QueryType,
     swarm: SwarmControl,
+    config: KademliaProtocolConfig,
     peer: PeerId,
     tx: mpsc::Sender<QueryUpdate>,
 }
@@ -283,23 +284,30 @@ impl QueryJob
         let startup = Instant::now();
         // start the connection if need
         me.swarm.connect(me.peer.clone(), vec!()).await?;
-        let stream = me.swarm.new_stream(me.peer.clone(), vec!()).await?;
+        let mut msg_sender = KadMessageSender::build(me.swarm, me.peer.clone(), me.config).await?;
 
         match me.qt {
             QueryType::GetClosestPeers | QueryType::FindPeer => {
-                let closer = send_find_node(stream, me.key).await?;
+                let closer = msg_sender.send_find_node(me.key).await?;
                 let duration = startup.elapsed();
                 let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, closer, provider: None, record: None, duration }).await;
             }
             QueryType::GetProviders {..} => {
-                let (closer, provider) = send_get_providers(stream, me.key).await?;
+                let (closer, provider) = msg_sender.send_get_providers(me.key).await?;
                 let duration = startup.elapsed();
                 let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, closer, provider: Some(provider), record: None, duration }).await;
+            }
+            QueryType::GetRecord {..} => {
+                let (closer, record) = msg_sender.send_get_value(me.key).await?;
+                let duration = startup.elapsed();
+                let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, closer, provider: None, record, duration }).await;
             }
             _ => {
                 panic!("shouldn't happen");
             }
         }
+
+        let _ = msg_sender.close().await;
 
         Ok(())
     }
@@ -348,6 +356,8 @@ pub(crate) struct IterativeQuery<'a> {
     local_id: PeerId,
     /// The kad configurations for queries.
     config: &'a QueryConfig,
+    /// The kad configurations for queries.
+    protocol_config: &'a KademliaProtocolConfig,
     /// The controller of Swarm.
     swarm: SwarmControl,
     /// The seed peers used to start the query.
@@ -383,7 +393,7 @@ pub struct PeerRecord {
 
 
 /// The query result returned by IterativeQuery.
-pub(crate) struct QueryResult2 {
+pub(crate) struct QueryResult {
     pub(crate) closest_peers: Vec<KadPeer>,
     pub(crate) found_peer: Option<KadPeer>,
     pub(crate) providers: Vec<KadPeer>,
@@ -504,12 +514,15 @@ pub enum QueryType {
 
 impl<'a> IterativeQuery<'a>
 {
-    pub(crate) fn new(query_type: QueryType, key: record::Key, local_id: PeerId, config: &'a QueryConfig, swarm: SwarmControl, seeds: Vec<Key<PeerId>>, event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
+    pub(crate) fn new(query_type: QueryType, key: record::Key, local_id: PeerId,
+                      config: &'a QueryConfig, protocol_config: &'a KademliaProtocolConfig,
+                      swarm: SwarmControl, seeds: Vec<Key<PeerId>>, event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
         Self {
             query_type,
             key,
             local_id,
             config,
+            protocol_config,
             swarm,
             seeds,
             event_tx
@@ -518,7 +531,7 @@ impl<'a> IterativeQuery<'a>
 
     pub(crate) fn run<F>(&mut self, f: F)
         where
-            F: FnOnce(Result<QueryResult2>) + Send + 'static,
+            F: FnOnce(Result<QueryResult>) + Send + 'static,
     {
         // check for empty seed peers
         if self.seeds.is_empty() {
@@ -531,7 +544,7 @@ impl<'a> IterativeQuery<'a>
         // indexed by Distance of the peer. The queried 'key' is used to calculate the distance.
         let mut closest_peers = ClosestPeers::new(self.key.clone());
         // prepare the query result
-        let mut query_results = QueryResult2 {
+        let mut query_results = QueryResult {
             closest_peers: vec![],
             found_peer: None,
             providers: vec![],
@@ -551,6 +564,7 @@ impl<'a> IterativeQuery<'a>
         }
 
         let qt = self.query_type.clone();
+        let config = self.protocol_config.clone();
         let key = self.key.clone();
         let local_id = self.local_id.clone();
         let swarm = self.swarm.clone();
@@ -579,7 +593,7 @@ impl<'a> IterativeQuery<'a>
                 // note that the first update comes from the initial seeds
                 let update = rx.next().await.expect("must");
                 // handle update, update the closest_peers, and update the kbuckets for new peer
-                // or dead peer detected, update the QueryResult2
+                // or dead peer detected, update the QueryResult
                 // TODO: check the state before setting state??
                 match update {
                     QueryUpdate::Queried { source, mut closer, provider, record, duration } => {
@@ -669,6 +683,7 @@ impl<'a> IterativeQuery<'a>
                         key: key.clone(),
                         qt: qt.clone(),
                         swarm: swarm.clone(),
+                        config: config.clone(),
                         peer: peer_id.clone(),
                         tx: tx.clone()
                     };
@@ -832,27 +847,8 @@ impl<TInner> Query<TInner> {
             QueryPeerIter::Fixed(iter) => iter.is_finished()
         }
     }
-
-    /// Consumes the query, producing the final `QueryResult`.
-    pub fn into_result(self) -> QueryResult<TInner, impl Iterator<Item = PeerId>> {
-        let peers = match self.peer_iter {
-            QueryPeerIter::Closest(iter) => Either::Left(Either::Left(iter.into_result())),
-            QueryPeerIter::ClosestDisjoint(iter) => Either::Left(Either::Right(iter.into_result())),
-            QueryPeerIter::Fixed(iter) => Either::Right(iter.into_result())
-        };
-        QueryResult { peers, inner: self.inner, stats: self.stats }
-    }
 }
 
-/// The result of a `Query`.
-pub struct QueryResult<TInner, TPeers> {
-    /// The opaque inner query state.
-    pub inner: TInner,
-    /// The successfully contacted peers.
-    pub peers: TPeers,
-    /// The collected query statistics.
-    pub stats: QueryStats
-}
 
 /// Execution statistics of a query.
 #[derive(Clone, Debug, PartialEq, Eq)]
