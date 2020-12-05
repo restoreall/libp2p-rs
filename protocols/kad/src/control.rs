@@ -23,7 +23,7 @@ use futures::SinkExt;
 use libp2prs_core::{PeerId, Multiaddr};
 
 use crate::{record, KadError};
-use crate::query::QueryId;
+use crate::query::{QueryId, PeerRecord};
 use crate::protocol::KadPeer;
 
 type Result<T> = std::result::Result<T, KadError>;
@@ -36,9 +36,7 @@ pub(crate) enum ControlCommand {
     FindPeer(PeerId, oneshot::Sender<Result<Option<KadPeer>>>),
     /// Lookup peers who are able to provide a given key.
     ///
-    /// When count is 0, this method will return an unbounded number of
-    /// results.
-    FindProviders(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
+    FindProviders(record::Key, usize, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Provide adds the given key to the content routing system.
     /// It also announces it, otherwise it is just kept in the local
     /// accounting of which objects are being provided.
@@ -46,7 +44,7 @@ pub(crate) enum ControlCommand {
     /// Adds value corresponding to given Key.
     PutValue(record::Key, oneshot::Sender<()>),
     /// Searches value corresponding to given Key.
-    GetValue(record::Key, oneshot::Sender<()>),
+    GetValue(record::Key, oneshot::Sender<Result<Vec<PeerRecord>>>),
 }
 
 

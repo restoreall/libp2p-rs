@@ -543,32 +543,60 @@ impl<TStore> Kademlia<TStore>
     /// Initiates an iterative lookup for the closest peers to the given key.
     fn get_closest_peers<F>(&mut self, key: record::Key, f: F)
         where
-            F: FnOnce(Result<QueryResult2>) + Send + 'static
+            F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static
     {
         let mut q = self.prepare_iterative_query(QueryType::GetClosestPeers, key);
 
-        q.run(f);
+        q.run(|r| {
+            f(r.map(|r|r.closest_peers));
+        });
     }
 
     /// Initiates an iterative lookup for the closest peers to the given key.
     fn find_peer<F>(&mut self, key: record::Key, f: F)
         where
-            F: FnOnce(Result<QueryResult2>) + Send + 'static
+            F: FnOnce(Result<Option<KadPeer>>) + Send + 'static
     {
         let mut q = self.prepare_iterative_query(QueryType::FindPeer, key);
 
-        q.run(f);
+        q.run(|r| {
+            f(r.map(|r|r.found_peer));
+        });
+    }
+
+    /// Performs a lookup for providers of a value to the given key.
+    ///
+    /// The result of this operation is delivered in a
+    /// reported via [`KademliaEvent::QueryResult{QueryResult::GetProviders}`].
+    fn get_providers<F>(&mut self, key: record::Key, count: usize, f: F)
+        where
+            F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static
+    {
+        let provider_peers = self.provider_peers(&key, None);
+
+        if provider_peers.len() >= count {
+            // ok, we have enough providers for this key, simply return
+            f(Ok(provider_peers));
+        } else {
+            let remaining = count - provider_peers.len();
+            let mut q = self.prepare_iterative_query(QueryType::GetProviders { count: remaining, local: Some(provider_peers) }, key);
+
+            q.run(|r|{
+                f(r.map(|r|r.providers));
+            });
+        }
+
     }
 
     /// Performs a lookup for a record in the DHT.
     ///
     /// The result of this operation is delivered in a
     /// [`KademliaEvent::QueryResult{QueryResult::GetRecord}`].
-    fn get_record<F>(&mut self, key: record::Key, quorum: usize, f: F)
+    fn get_record<F>(&mut self, key: record::Key, f: F)
         where
-            F: FnOnce(Result<QueryResult2>) + Send + 'static
+            F: FnOnce(Result<Vec<PeerRecord>>) + Send + 'static
     {
-        let quorum = quorum.min(self.queries.config().replication_factor.get());
+        let quorum = self.queries.config().replication_factor.get();
         let mut records = Vec::with_capacity(quorum);
 
         if let Some(record) = self.store.get(&key) {
@@ -579,25 +607,16 @@ impl<TStore> Kademlia<TStore>
             }
         }
 
-        let needed = records.len() - quorum;
-        if needed > 0 {
+        if records.len() >= quorum {
             // ok, we have enough, simply return
-            // TODO:
-            f(Ok(QueryResult2 {
-                closest_peers: vec![],
-                found_peer: None,
-                providers: vec![],
-                records
-            }));
-
-
+            f(Ok(records));
         } else {
-            let mut q = self.prepare_iterative_query(QueryType::GetRecord(needed), key);
-
-            q.run(f);
-
+            let needed = quorum - records.len();
+            let mut q = self.prepare_iterative_query(QueryType::GetRecord { quorum_needed: needed, local: Some(records) }, key);
+            q.run(|r|{
+                f(r.map(|r|r.records));
+            });
         }
-
     }
 
     /// Stores a record in the DHT.
@@ -749,21 +768,6 @@ impl<TStore> Kademlia<TStore>
         self.store.remove_provider(key, self.kbuckets.local_key().preimage());
     }
 
-    /// Performs a lookup for providers of a value to the given key.
-    ///
-    /// The result of this operation is delivered in a
-    /// reported via [`KademliaEvent::QueryResult{QueryResult::GetProviders}`].
-    pub fn get_providers(&mut self, key: record::Key) -> QueryId {
-        let info = QueryInfo::GetProviders {
-            key: key.clone(),
-            providers: HashSet::new(),
-        };
-        let target = kbucket::Key::new(key);
-        let peers = self.kbuckets.closest_keys(&target);
-        let inner = QueryInner::new(info);
-        self.queries.add_iter_closest(target.clone(), peers, inner)
-    }
-
     /// Processes discovered peers from a successful request in an iterative `Query`.
     fn discovered<'a, I>(&'a mut self, query_id: &QueryId, source: &PeerId, peers: I)
         where
@@ -800,14 +804,15 @@ impl<TStore> Kademlia<TStore>
     }
 
     /// Collects all peers who are known to be providers of the value for a given `Multihash`.
-    fn provider_peers(&mut self, key: &record::Key, source: &PeerId) -> Vec<KadPeer> {
+    fn provider_peers(&mut self, key: &record::Key, source: Option<&PeerId>) -> Vec<KadPeer> {
         let kbuckets = &mut self.kbuckets;
         let connected = &mut self.connected_peers;
         let local_addrs = &self.local_addrs;
         self.store.providers(key)
             .into_iter()
             .filter_map(move |p|
-                if &p.provider != source {
+                // &p.provider != source, kingwel makes the change
+                if source.map_or(true, |pid|pid != &p.provider) {
                     let node_id = p.provider;
                     let multiaddrs = p.addresses;
                     let connection_ty = if connected.contains(&node_id) {
@@ -1619,7 +1624,7 @@ impl<TStore> Kademlia<TStore>
                 }
             }
             KadRequestMsg::GetProviders { key } => {
-                let provider_peers = self.provider_peers(&key, &source);
+                let provider_peers = self.provider_peers(&key, Some(&source));
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
                 Ok(Some(KadResponseMsg::GetProviders {
                         closer_peers,
@@ -1660,16 +1665,18 @@ impl<TStore> Kademlia<TStore>
         match cmd {
             Some(ControlCommand::Lookup(key, reply)) => {
                 self.get_closest_peers(key, |r| {
-                    let _ = reply.send(r.map(|r|r.closest_peers));
+                    let _ = reply.send(r);
                 });
             }
             Some(ControlCommand::FindPeer(peer_id, reply)) => {
                 self.find_peer(peer_id.into_bytes().into(), |r| {
-                    let _ = reply.send(r.map(|r|r.found_peer));
+                    let _ = reply.send(r);
                 });
             }
-            Some(ControlCommand::FindProviders(key, reply)) => {
-                let _ = reply.send(Err(KadError::NoKnownPeers));
+            Some(ControlCommand::FindProviders(key, count, reply)) => {
+                self.get_providers(key, count, |r| {
+                    let _ = reply.send(r);
+                });
             }
             Some(ControlCommand::Providing(key, reply)) => {
                 let _ = reply.send(());
@@ -1678,7 +1685,9 @@ impl<TStore> Kademlia<TStore>
                 let _ = reply.send(());
             }
             Some(ControlCommand::GetValue(key, reply)) => {
-                let _ = reply.send(());
+                self.get_record(key, |r| {
+                    let _ = reply.send(r);
+                });
             }
             None => {}
         }

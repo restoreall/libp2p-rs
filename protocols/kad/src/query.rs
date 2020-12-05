@@ -291,7 +291,7 @@ impl QueryJob
                 let duration = startup.elapsed();
                 let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, closer, provider: None, record: None, duration }).await;
             }
-            QueryType::GetProviders(_) => {
+            QueryType::GetProviders {..} => {
                 let (closer, provider) = send_get_providers(stream, me.key).await?;
                 let duration = startup.elapsed();
                 let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, closer, provider: Some(provider), record: None, duration }).await;
@@ -487,11 +487,19 @@ pub enum QueryType {
     /// A query initiated by [`Kademlia::get_closest_peers`].
     GetClosestPeers,
     /// A query initiated by [`Kademlia::get_providers`].
-    /// 'usize' means how many providers is needed before completing.
-    GetProviders(usize),
+    GetProviders {
+        /// How many providers is needed before completing.
+        count: usize,
+        /// Providers found locally.
+        local: Option<Vec<KadPeer>>,
+    },
     /// A query initiated by [`Kademlia::get_record`].
-    /// 'usize' means quorum needed by get_record.
-    GetRecord(usize),
+    GetRecord {
+        /// The quorum needed by get_record.
+        quorum_needed: usize,
+        /// Records found locally.
+        local: Option<Vec<PeerRecord>>,
+    }
 }
 
 impl<'a> IterativeQuery<'a>
@@ -519,6 +527,29 @@ impl<'a> IterativeQuery<'a>
             return;
         }
 
+        // closest_peers is used to retrieve the closer peers. It is a sorted btree-map, which is
+        // indexed by Distance of the peer. The queried 'key' is used to calculate the distance.
+        let mut closest_peers = ClosestPeers::new(self.key.clone());
+        // prepare the query result
+        let mut query_results = QueryResult2 {
+            closest_peers: vec![],
+            found_peer: None,
+            providers: vec![],
+            records: vec![],
+        };
+
+        // extract local PeerRecord or Providers from QueryType
+        // local items are parts of the final result
+        match &mut self.query_type {
+            QueryType::GetProviders { count:_, local } => {
+                query_results.providers = local.take().unwrap();
+            }
+            QueryType::GetRecord { quorum_needed:_, local } => {
+                query_results.records = local.take().unwrap();
+            }
+            _ => {}
+        }
+
         let qt = self.query_type.clone();
         let key = self.key.clone();
         let local_id = self.local_id.clone();
@@ -531,15 +562,6 @@ impl<'a> IterativeQuery<'a>
 
         // the channel used to deliver the result of each jobs
         let (mut tx, mut rx) = mpsc::channel(alpha_value);
-
-        // closest_peers is used to record the queried results
-        let mut closest_peers = ClosestPeers::new(key.clone());
-        let mut query_results = QueryResult2 {
-            closest_peers: vec![],
-            found_peer: None,
-            providers: vec![],
-            records: vec![],
-        };
 
         // start a task for query
         task::spawn(async move {
@@ -584,23 +606,23 @@ impl<'a> IterativeQuery<'a>
                                     break;
                                 }
                             }
-                            QueryType::GetProviders(cnt) => {
+                            QueryType::GetProviders { count, .. } => {
                                 // update providers
                                 if let Some(provider) = provider {
                                     query_results.providers.extend(provider);
                                 }
 
-                                if query_results.providers.len() >= cnt {
-                                    log::info!("GetProviders: got enough provider for {:?}, limit={}", key, cnt);
+                                if query_results.providers.len() >= count {
+                                    log::info!("GetProviders: got enough provider for {:?}, limit={}", key, count);
                                     break;
                                 }
                             }
-                            QueryType::GetRecord(quorum) => {
+                            QueryType::GetRecord { quorum_needed, .. } => {
                                 if let Some(record) = record {
                                     log::trace!("GetRecord: record found {:?} key={:?}", record, key);
                                     query_results.records.push(PeerRecord { peer: Some(source), record });
 
-                                    if query_results.records.len() > quorum {
+                                    if query_results.records.len() > quorum_needed {
                                         log::info!("GetRecord: got enough records for key={:?}", key);
                                         break;
                                     }
