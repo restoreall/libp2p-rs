@@ -100,6 +100,16 @@ impl fmt::Debug for Substream {
     }
 }
 
+// Note that we spawn a task to close Substream, since Rust doesn't support Async Destructor yet
+impl Drop for Substream {
+    fn drop(&mut self) {
+        let mut s = self.clone();
+        async_std::task::spawn(async move {
+            let _ = s.close2().await;
+        });
+    }
+}
+
 impl Substream {
     pub(crate) fn new(
         inner: IReadWrite,
