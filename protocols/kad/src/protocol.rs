@@ -163,8 +163,8 @@ pub struct KademliaProtocolConfig {
 
 impl KademliaProtocolConfig {
     /// Returns the configured protocol name.
-    pub fn protocol_name(&self) -> ProtocolId {
-        self.protocol_name.clone()
+    pub fn protocol_name(&self) -> &ProtocolId {
+        &self.protocol_name
     }
 
     /// Modifies the protocol name used on the wire. Can be used to create incompatibilities
@@ -214,7 +214,7 @@ impl KadProtocolHandler {
     }
 
     /// Returns the configured protocol name.
-    pub fn protocol_name(&self) -> &[u8] {
+    pub fn protocol_name(&self) -> &ProtocolId {
         &self.config.protocol_name
     }
 
@@ -295,6 +295,8 @@ pub(crate) struct KadMessageSender {
 
 impl KadMessageSender {
     pub(crate) async fn build(mut swarm: SwarmControl, peer: PeerId, config: KademliaProtocolConfig) -> Result<Self, KadError> {
+        // TODO: addresses??
+        swarm.connect(peer.clone(), vec!()).await?;
         let stream = swarm.new_stream(peer, vec!(config.protocol_name())).await?;
         Ok(Self {
             stream,

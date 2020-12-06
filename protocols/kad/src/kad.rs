@@ -540,6 +540,11 @@ impl<TStore> Kademlia<TStore>
         self.kbuckets.bucket(&kbucket::Key::new(key))
     }
 
+    /// Gets a mutable reference to the record store.
+    pub fn store_mut(&mut self) -> &mut TStore {
+        &mut self.store
+    }
+
     // prepare and generate a IterativeQuery for iterative query.
     fn prepare_iterative_query(&mut self, qt: QueryType, key: record::Key) -> IterativeQuery
     {
@@ -567,7 +572,10 @@ impl<TStore> Kademlia<TStore>
         });
     }
 
-    /// Initiates an iterative lookup for the closest peers to the given key.
+    /// Performs an iterative lookup for the closest peers to the given key.
+    ///
+    /// The result of this operation is delivered into the callback
+    /// Fn(Result<Option<KadPeer>>).
     fn find_peer<F>(&mut self, key: record::Key, f: F)
         where
             F: FnOnce(Result<Option<KadPeer>>) + Send + 'static
@@ -581,8 +589,8 @@ impl<TStore> Kademlia<TStore>
 
     /// Performs a lookup for providers of a value to the given key.
     ///
-    /// The result of this operation is delivered in a
-    /// reported via [`KademliaEvent::QueryResult{QueryResult::GetProviders}`].
+    /// The result of this operation is delivered into the callback
+    /// Fn(Result<Vec<KadPeer>>).
     fn get_providers<F>(&mut self, key: record::Key, count: usize, f: F)
         where
             F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static
@@ -603,10 +611,10 @@ impl<TStore> Kademlia<TStore>
 
     }
 
-    /// Performs a lookup for a record in the DHT.
+    /// Performs a lookup of a record to the given key.
     ///
-    /// The result of this operation is delivered in a
-    /// [`KademliaEvent::QueryResult{QueryResult::GetRecord}`].
+    /// The result of this operation is delivered into the callback
+    /// Fn(Result<Vec<PeerRecord>>).
     fn get_record<F>(&mut self, key: record::Key, f: F)
         where
             F: FnOnce(Result<Vec<PeerRecord>>) + Send + 'static
@@ -636,11 +644,6 @@ impl<TStore> Kademlia<TStore>
 
     /// Stores a record in the DHT.
     ///
-    /// Returns `Ok` if a record has been stored locally, providing the
-    /// `QueryId` of the initial query that replicates the record in the DHT.
-    /// The result of the query is eventually reported as a
-    /// [`KademliaEvent::QueryResult{QueryResult::PutRecord}`].
-    ///
     /// The record is always stored locally with the given expiration. If the record's
     /// expiration is `None`, the common case, it does not expire in local storage
     /// but is still replicated with the configured record TTL. To remove the record
@@ -651,23 +654,41 @@ impl<TStore> Kademlia<TStore>
     /// does not update the record's expiration in local storage, thus a given record
     /// with an explicit expiration will always expire at that instant and until then
     /// is subject to regular (re-)replication and (re-)publication.
-    pub fn put_record(&mut self, mut record: Record, quorum: Quorum) -> Result<QueryId> {
+    ///
+    /// The result of this operation is delivered into the callback
+    /// Fn(Result<()>).
+    fn put_record<F>(&mut self, mut record: Record, f: F)
+        where
+            F: FnOnce(Result<()>) + Send + 'static
+    {
+        // TODO: probably we should check if there is a old record with the same key?
+
         record.publisher = Some(self.kbuckets.local_key().preimage().clone());
-        self.store.put(record.clone())?;
+        if let Err(e) = self.store.put(record.clone()) {
+            f(Err(e));
+            return;
+        }
         record.expires = record.expires.or_else(||
             self.record_ttl.map(|ttl| Instant::now() + ttl));
-        let quorum = quorum.eval(self.queries.config().replication_factor);
-        let target = kbucket::Key::new(record.key.clone());
-        let peers = self.kbuckets.closest_keys(&target);
-        let context = PutRecordContext::Publish;
-        let info = QueryInfo::PutRecord {
-            context,
-            record,
-            quorum,
-            //phase: PutRecordPhase::GetClosestPeers
-        };
-        let inner = QueryInner::new(info);
-        Ok(self.queries.add_iter_closest(target.clone(), peers, inner))
+        let quorum = self.queries.config().replication_factor.get();
+
+        // initialte the iterative lookup for closest peers, which can be used to publish the record
+        self.get_closest_peers(record.key.clone(), |peers| {
+            // TODO:
+        });
+
+
+        // let target = kbucket::Key::new(record.key.clone());
+        // let peers = self.kbuckets.closest_keys(&target);
+        // let context = PutRecordContext::Publish;
+        // let info = QueryInfo::PutRecord {
+        //     context,
+        //     record,
+        //     quorum,
+        //     //phase: PutRecordPhase::GetClosestPeers
+        // };
+        // let inner = QueryInner::new(info);
+        // Ok(self.queries.add_iter_closest(target.clone(), peers, inner))
     }
 
     /// Removes the record with the given key from _local_ storage,
@@ -679,17 +700,12 @@ impl<TStore> Kademlia<TStore>
     /// This is a _local_ operation. However, it also has the effect that
     /// the record will no longer be periodically re-published, allowing the
     /// record to eventually expire throughout the DHT.
-    pub fn remove_record(&mut self, key: &record::Key) {
+    fn remove_record(&mut self, key: &record::Key) {
         if let Some(r) = self.store.get(key) {
             if r.publisher.as_ref() == Some(self.kbuckets.local_key().preimage()) {
                 self.store.remove(key)
             }
         }
-    }
-
-    /// Gets a mutable reference to the record store.
-    pub fn store_mut(&mut self) -> &mut TStore {
-        &mut self.store
     }
 
     /// Bootstraps the local node to join the DHT.
@@ -726,14 +742,11 @@ impl<TStore> Kademlia<TStore>
         }
     }
 
-    /// Establishes the local node as a provider of a value for the given key.
+    /// Performs publishing as a provider of a value for the given key.
     ///
     /// This operation publishes a provider record with the given key and
     /// identity of the local node to the peers closest to the key, thus establishing
     /// the local node as a provider.
-    ///
-    /// Returns `Ok` if a provider record has been stored locally, providing the
-    /// `QueryId` of the initial query that announces the local node as a provider.
     ///
     /// The publication of the provider records is periodically repeated as per the
     /// configured interval, to renew the expiry and account for changes to the DHT
@@ -746,9 +759,12 @@ impl<TStore> Kademlia<TStore>
     /// The means by which the actual value is obtained from a provider is out of scope
     /// of the libp2p Kademlia provider API.
     ///
-    /// The results of the (repeated) provider announcements sent by this node are
-    /// reported via [`KademliaEvent::QueryResult{QueryResult::StartProviding}`].
-    pub fn start_providing(&mut self, key: record::Key) -> Result<QueryId> {
+    /// The result of this operation is delivered into the callback
+    /// Fn(Result<()>).
+    fn start_providing<F>(&mut self, key: record::Key, f: F)
+        where
+            F: FnOnce(Result<()>) + Send + 'static
+    {
         // Note: We store our own provider records locally without local addresses
         // to avoid redundant storage and outdated addresses. Instead these are
         // acquired on demand when returning a `ProviderRecord` for the local node.
@@ -757,22 +773,29 @@ impl<TStore> Kademlia<TStore>
             key.clone(),
             self.kbuckets.local_key().preimage().clone(),
             local_addrs);
-        self.store.add_provider(record)?;
-        let target = kbucket::Key::new(key.clone());
-        let peers = self.kbuckets.closest_keys(&target);
-        let context = AddProviderContext::Publish;
-        let info = QueryInfo::AddProvider {
-            context,
-            key,
-            //phase: AddProviderPhase::GetClosestPeers
-            // TODO
-            provider_id: PeerId::random(),
-            external_addresses: vec![],
-            get_closest_peers_stats: QueryStats::empty()
-        };
-        let inner = QueryInner::new(info);
-        let id = self.queries.add_iter_closest(target.clone(), peers, inner);
-        Ok(id)
+        if let Err(e) = self.store.add_provider(record) {
+            f(Err(e));
+            return;
+        }
+        // initialte the iterative lookup for closest peers, which can be used to publish the record
+        self.get_closest_peers(key, |peers| {
+            // TODO:
+        });
+        // let target = kbucket::Key::new(key.clone());
+        // let peers = self.kbuckets.closest_keys(&target);
+        // let context = AddProviderContext::Publish;
+        // let info = QueryInfo::AddProvider {
+        //     context,
+        //     key,
+        //     //phase: AddProviderPhase::GetClosestPeers
+        //     // TODO
+        //     provider_id: PeerId::random(),
+        //     external_addresses: vec![],
+        //     get_closest_peers_stats: QueryStats::empty()
+        // };
+        // let inner = QueryInner::new(info);
+        // let id = self.queries.add_iter_closest(target.clone(), peers, inner);
+        // Ok(id)
     }
 
     /// Stops the local node from announcing that it is a provider for the given key.

@@ -280,8 +280,6 @@ impl QueryJob
     async fn execute(self) -> Result<()> {
         let mut me = self;
         let startup = Instant::now();
-        // start the connection if need
-        me.swarm.connect(me.peer.clone(), vec!()).await?;
         let mut msg_sender = KadMessageSender::build(me.swarm, me.peer.clone(), me.config).await?;
 
         match me.qt {
