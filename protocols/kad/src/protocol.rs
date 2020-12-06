@@ -58,6 +58,9 @@ pub const DEFAULT_PROTO_NAME: &[u8] = b"/ipfs/kad/1.0.0";
 /// The default maximum size for a varint length-delimited packet.
 pub const DEFAULT_MAX_PACKET_SIZE: usize = 16 * 1024;
 
+/// The number of times we will try to reuse a stream to a given peer.
+pub const DEFAULT_MAX_REUSE_TRIES: usize = 3;
+
 /// Status of our connection to a node reported by the Kademlia protocol.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum KadConnectionType {
@@ -156,9 +159,12 @@ type ProtocolId = &'static [u8];
 /// Configuration for a Kademlia protocol handler.
 #[derive(Debug, Clone)]
 pub struct KademliaProtocolConfig {
+    /// The Kademlia protocol name, e.g., b"/ipfs/kad/1.0.0".
     protocol_name: ProtocolId,
     /// Maximum allowed size of a packet.
     max_packet_size: usize,
+    /// Maximum allowed reuse count of a substream, used by Messenger cache.
+    max_reuse_count: usize,
 }
 
 impl KademliaProtocolConfig {
@@ -184,6 +190,7 @@ impl Default for KademliaProtocolConfig {
         KademliaProtocolConfig {
             protocol_name: DEFAULT_PROTO_NAME,
             max_packet_size: DEFAULT_MAX_PACKET_SIZE,
+            max_reuse_count: DEFAULT_MAX_REUSE_TRIES,
         }
     }
 }
@@ -284,28 +291,42 @@ impl ProtocolHandler for KadProtocolHandler {
     }
 }
 
-/// Kademlia message sender.
+/// Kademlia messenger.
 ///
-/// The message sender actually sends a Kad request message and waits for the correct response
+/// The messenger actually sends a Kad request message and waits for the correct response
 /// message.
-pub(crate) struct KadMessageSender {
-    stream: Substream,
-    config: KademliaProtocolConfig,
+pub(crate) struct KadMessenger {
+    /// The substream for I/O.
+    pub(crate) stream: Substream,
+    /// The configuration of Kad protocol.
+    pub(crate) config: KademliaProtocolConfig,
+    /// The PeerId which this messenger is connected to.
+    peer: PeerId,
+    /// The reuse count, >=3 will be recycled.
+    reuse: usize,
 }
 
-impl KadMessageSender {
+impl KadMessenger {
     pub(crate) async fn build(mut swarm: SwarmControl, peer: PeerId, config: KademliaProtocolConfig) -> Result<Self, KadError> {
         // TODO: addresses??
         swarm.connect(peer.clone(), vec!()).await?;
-        let stream = swarm.new_stream(peer, vec!(config.protocol_name())).await?;
+        let stream = swarm.new_stream(peer.clone(), vec!(config.protocol_name())).await?;
         Ok(Self {
             stream,
-            config
+            config,
+            peer,
+            reuse: 0,
         })
     }
 
-    pub(crate) async fn close(&mut self) -> Result<(), KadError> {
-        self.stream.close2().await.map_err(io::Error::into)
+    pub(crate) fn get_peer_id(&self) -> &PeerId {
+        &self.peer
+    }
+
+    // update reuse count, true means yes please reuse, otherwise, messenger is recycled
+    pub(crate) async fn reuse(&mut self) -> bool {
+        self.reuse += 1;
+        self.reuse < self.config.max_reuse_count
     }
 
     async fn send_request(&mut self, request: KadRequestMsg) -> Result<KadResponseMsg, KadError>
@@ -315,7 +336,7 @@ impl KadMessageSender {
         proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
         self.stream.write2(&buf).await?;
 
-        let packet = self.stream.read_one(4096).await?;
+        let packet = self.stream.read_one(self.config.max_packet_size).await?;
         let response = proto::Message::decode(&packet[..]).map_err(|_| KadError::Decode)?;
         log::trace!("Kad handler recv : {:?}", response);
 
@@ -354,6 +375,15 @@ impl KadMessageSender {
         }
     }
 
+    pub(crate) async fn send_put_value(&mut self, record: Record) -> Result<(record::Key, Vec<u8>), KadError>
+    {
+        let req = KadRequestMsg::PutValue { record };
+        let rsp = self.send_request(req).await?;
+        match rsp {
+            KadResponseMsg::PutValue { key, value } => Ok((key, value)),
+            _ => Err(KadError::UnexpectedMessage("wrong message type received when PutValue"))
+        }
+    }
 }
 
 

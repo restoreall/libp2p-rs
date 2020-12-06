@@ -37,7 +37,8 @@ use futures::{StreamExt, SinkExt};
 use std::collections::BTreeMap;
 use async_std::task::JoinHandle;
 
-use crate::protocol::{ProtocolEvent, KadPeer, KadConnectionType, KademliaProtocolConfig, KadMessageSender};
+use crate::protocol::{ProtocolEvent, KadPeer, KadConnectionType, KademliaProtocolConfig, KadMessenger};
+use crate::kad::MessengerCache;
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -269,8 +270,7 @@ impl Default for QueryConfig {
 struct QueryJob {
     key: record::Key,
     qt: QueryType,
-    swarm: SwarmControl,
-    config: KademliaProtocolConfig,
+    messengers: MessengerCache,
     peer: PeerId,
     tx: mpsc::Sender<QueryUpdate>,
 }
@@ -280,30 +280,32 @@ impl QueryJob
     async fn execute(self) -> Result<()> {
         let mut me = self;
         let startup = Instant::now();
-        let mut msg_sender = KadMessageSender::build(me.swarm, me.peer.clone(), me.config).await?;
 
+        let mut messenger = me.messengers.get_messenger(&me.peer).await?;
+        let peer = me.peer.clone();
         match me.qt {
             QueryType::GetClosestPeers | QueryType::FindPeer => {
-                let closer = msg_sender.send_find_node(me.key).await?;
+                let closer = messenger.send_find_node(me.key).await?;
                 let duration = startup.elapsed();
-                let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, closer, provider: None, record: None, duration }).await;
+                let _ = me.tx.send(QueryUpdate::Queried { source: peer, closer, provider: None, record: None, duration }).await;
             }
             QueryType::GetProviders {..} => {
-                let (closer, provider) = msg_sender.send_get_providers(me.key).await?;
+                let (closer, provider) = messenger.send_get_providers(me.key).await?;
                 let duration = startup.elapsed();
-                let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, closer, provider: Some(provider), record: None, duration }).await;
+                let _ = me.tx.send(QueryUpdate::Queried { source: peer, closer, provider: Some(provider), record: None, duration }).await;
             }
             QueryType::GetRecord {..} => {
-                let (closer, record) = msg_sender.send_get_value(me.key).await?;
+                let (closer, record) = messenger.send_get_value(me.key).await?;
                 let duration = startup.elapsed();
-                let _ = me.tx.send(QueryUpdate::Queried { source: me.peer, closer, provider: None, record, duration }).await;
+                let _ = me.tx.send(QueryUpdate::Queried { source: peer, closer, provider: None, record, duration }).await;
             }
             _ => {
                 panic!("shouldn't happen");
             }
         }
 
-        let _ = msg_sender.close().await;
+        // try to put messenger into cache
+        me.messengers.put_messenger(messenger).await;
 
         Ok(())
     }
@@ -346,16 +348,14 @@ impl PeerWithState {
 pub(crate) struct IterativeQuery<'a> {
     /// The target to be queried.
     key: record::Key,
+    /// The Messenger is used to send/receive Kad messages.
+    messenger: MessengerCache,
     /// The query type to be executed.
     query_type: QueryType,
     /// The local peer Id of myself.
     local_id: PeerId,
     /// The kad configurations for queries.
     config: &'a QueryConfig,
-    /// The kad configurations for queries.
-    protocol_config: &'a KademliaProtocolConfig,
-    /// The controller of Swarm.
-    swarm: SwarmControl,
     /// The seed peers used to start the query.
     seeds: Vec<Key<PeerId>>,
     /// The channel tx used to send message to Kad main loop.
@@ -510,18 +510,17 @@ pub enum QueryType {
 
 impl<'a> IterativeQuery<'a>
 {
-    pub(crate) fn new(query_type: QueryType, key: record::Key, local_id: PeerId,
-                      config: &'a QueryConfig, protocol_config: &'a KademliaProtocolConfig,
-                      swarm: SwarmControl, seeds: Vec<Key<PeerId>>, event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
+    pub(crate) fn new(query_type: QueryType, key: record::Key, messenger: MessengerCache,
+                      local_id: PeerId, config: &'a QueryConfig, seeds: Vec<Key<PeerId>>,
+                      event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
         Self {
             query_type,
             key,
+            messenger,
             local_id,
             config,
-            protocol_config,
-            swarm,
             seeds,
-            event_tx
+            event_tx,
         }
     }
 
@@ -560,10 +559,9 @@ impl<'a> IterativeQuery<'a>
         }
 
         let qt = self.query_type.clone();
-        let config = self.protocol_config.clone();
         let key = self.key.clone();
+        let messenger = self.messenger.clone();
         let local_id = self.local_id.clone();
-        let swarm = self.swarm.clone();
         let seeds = self.seeds.clone();
         let alpha_value = self.config.parallelism.get();
         let beta_value = self.config.beta_value.get();
@@ -672,23 +670,21 @@ impl<'a> IterativeQuery<'a>
                 for peer in peer_iter {
                     //closest_peers.set_peer_state(&peer, PeerState::Waiting);
                     peer.state = PeerState::Waiting;
-                    let mut tx = tx.clone();
                     let peer_id = peer.peer.node_id.clone();
 
                     let job = QueryJob {
                         key: key.clone(),
                         qt: qt.clone(),
-                        swarm: swarm.clone(),
-                        config: config.clone(),
+                        messengers: messenger.clone(),
                         peer: peer_id.clone(),
                         tx: tx.clone()
                     };
 
+                    let mut tx = tx.clone();
                     let _ = task::spawn(async move {
                         let r = job.execute().await;
                         if r.is_err() {
                             let _ = tx.send(QueryUpdate::Unreachable(peer_id)).await;
-                            return;
                         }
                     });
                 }

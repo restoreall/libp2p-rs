@@ -23,6 +23,7 @@ use std::collections::{HashMap, VecDeque, HashSet};
 use std::num::NonZeroUsize;
 use std::borrow::Borrow;
 use smallvec::SmallVec;
+use std::sync::{Arc};
 use fnv::{FnvHashSet, FnvHashMap};
 
 use futures::stream::FusedStream;
@@ -39,7 +40,7 @@ use libp2prs_swarm::substream::Substream;
 use libp2prs_swarm::Control as SwarmControl;
 use libp2prs_traits::{ReadEx, WriteEx};
 
-use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig};
+use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger};
 use crate::control::{Control, ControlCommand};
 
 use crate::query::{QueryId, QueryPool, QueryConfig, QueryStats, IterativeQuery, QueryType, PeerRecord};
@@ -47,6 +48,8 @@ use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
 use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
+use futures::lock::Mutex;
+
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -67,6 +70,9 @@ pub struct Kademlia<TStore> {
 
     /// The config for queries.
     query_config: QueryConfig,
+
+    /// The cache of Kademlia messenger.
+    messengers: Option<MessengerCache>,
 
     /// The currently connected peers.
     ///
@@ -383,6 +389,7 @@ impl<TStore> Kademlia<TStore>
             queries: QueryPool::new(config.query_config.clone()),
             protocol_config: config.protocol_config,
             query_config: config.query_config,
+            messengers: None,
             connected_peers: Default::default(),
             add_provider_job,
             put_record_job,
@@ -552,9 +559,9 @@ impl<TStore> Kademlia<TStore>
         let target = kbucket::Key::new(key.clone());
         let seeds = self.kbuckets.closest_keys(&target).into_iter().collect();
 
-        let query = IterativeQuery::new(qt, key, local_id,
-                                        &self.query_config, &self.protocol_config,
-                                    self.swarm.clone().expect("must be there"),
+        let query = IterativeQuery::new(qt, key,
+                                        self.messengers.clone().expect("must be Some"),
+                                        local_id, &self.query_config,
                                         seeds, self.event_tx.clone());
 
         query
@@ -670,11 +677,27 @@ impl<TStore> Kademlia<TStore>
         }
         record.expires = record.expires.or_else(||
             self.record_ttl.map(|ttl| Instant::now() + ttl));
-        let quorum = self.queries.config().replication_factor.get();
+        //let quorum = self.queries.config().replication_factor.get();
 
+        let messengers = self.messengers.clone().expect("must be Some");
         // initialte the iterative lookup for closest peers, which can be used to publish the record
-        self.get_closest_peers(record.key.clone(), |peers| {
+        self.get_closest_peers(record.key.clone(), move |peers| {
             // TODO:
+            if peers.is_ok() {
+                for peer in peers.unwrap() {
+                    let record = record.clone();
+                    let mut messengers = messengers.clone();
+                    task::spawn(async move {
+                        if let Ok(mut ms) = messengers.get_messenger(&peer.node_id).await {
+                            if ms.send_put_value(record).await.is_ok() {
+                                messengers.put_messenger(ms).await;
+                            }
+                            // otherwise, ms will be dropped here, a task will be spawned to close
+                            // the inner substream...
+                        }
+                    });
+                }
+            }
         });
 
 
@@ -778,7 +801,7 @@ impl<TStore> Kademlia<TStore>
             return;
         }
         // initialte the iterative lookup for closest peers, which can be used to publish the record
-        self.get_closest_peers(key, |peers| {
+        self.get_closest_peers(key, move |peers| {
             // TODO:
         });
         // let target = kbucket::Key::new(key.clone());
@@ -984,7 +1007,7 @@ impl<TStore> Kademlia<TStore>
     /// Processes a record received from a peer.
     fn record_received(
         &mut self,
-        source: PeerId,
+        _source: PeerId,
         mut record: Record
     ) -> Result<KadResponseMsg> {
         if record.publisher.as_ref() == Some(self.kbuckets.local_key().preimage()) {
@@ -1079,6 +1102,7 @@ impl<TStore> Kademlia<TStore>
 
     /// Start the main message loop of Kademlia.
     pub fn start(mut self, swarm: SwarmControl) {
+        self.messengers = Some(MessengerCache::new(swarm.clone(), self.protocol_config.clone()));
         self.swarm = Some(swarm);
 
         // well, self 'move' explicitly,
@@ -1587,3 +1611,46 @@ pub enum RoutingUpdate {
 }
 
 
+///////////////////////////////////////////
+#[derive(Clone)]
+pub(crate) struct MessengerCache {
+    streams: Arc<Mutex<FnvHashMap<PeerId, KadMessenger>>>,
+    swarm: SwarmControl,
+    config: KademliaProtocolConfig,
+}
+
+impl MessengerCache {
+    fn new(swarm: SwarmControl, config: KademliaProtocolConfig) -> Self {
+        Self { streams: Arc::new(Default::default()), swarm, config }
+    }
+
+    pub(crate) async fn get_messenger(&mut self, peer: &PeerId) -> Result<KadMessenger> {
+        // lock as little as possible
+        let r = {
+            let mut streams = self.streams.lock().await;
+            streams.remove(peer)
+        };
+
+        match r {
+            Some(sender) => {
+                Ok(sender)
+            }
+            None => {
+                // make a new sender
+                KadMessenger::build(self.swarm.clone(), peer.clone(), self.config.clone()).await
+            }
+        }
+    }
+
+    pub(crate) async fn put_messenger(&mut self, mut messenger: KadMessenger) {
+        if messenger.reuse().await {
+            let mut streams = self.streams.lock().await;
+            let peer = messenger.get_peer_id();
+
+            // perhaps there is a messenger in the hashmap already
+            if !streams.contains_key(peer) {
+                streams.insert(peer.clone(), messenger);
+            }
+        }
+    }
+}
