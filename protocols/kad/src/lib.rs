@@ -34,6 +34,7 @@ mod addresses;
 mod control;
 mod jobs;
 mod query;
+mod task_limit;
 
 mod dht_proto {
     include!(concat!(env!("OUT_DIR"), "/dht.pb.rs"));
@@ -134,6 +135,8 @@ pub enum KadError {
     ValueTooLarge,
     /// An operation failed to due no known peers in the routing table.
     NoKnownPeers,
+    /// An operation is done but nothing found.
+    NotFound,
     /// Error while trying to perform the upgrade.
     Upgrade,
     /// Error while bootstrapping Kademlia-DHT.

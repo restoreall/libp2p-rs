@@ -661,7 +661,7 @@ impl<'a> IterativeQuery<'a>
                 }
 
                 // calculate the maximum number of queries we could be running
-                // Note: NumWaiting will be updated before invoking run_query_single()
+                // Note: NumWaiting will be updated before invoking job.execute()
                 let num_jobs = alpha_value.checked_sub(closest_peers.num_of_state(PeerState::Waiting)).unwrap();
 
                 log::info!("iteratively querying, starting {} jobs", num_jobs);
@@ -924,6 +924,7 @@ impl QueryStats {
         }
     }
 }
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]

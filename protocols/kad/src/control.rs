@@ -33,7 +33,7 @@ pub(crate) enum ControlCommand {
     Lookup(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Searches for a peer with given ID, returns a list of peer info
     /// with relevant addresses.
-    FindPeer(PeerId, oneshot::Sender<Result<Option<KadPeer>>>),
+    FindPeer(PeerId, oneshot::Sender<Result<KadPeer>>),
     /// Lookup peers who are able to provide a given key.
     ///
     FindProviders(record::Key, usize, oneshot::Sender<Result<Vec<KadPeer>>>),
@@ -70,7 +70,7 @@ impl Control {
         rx.await.expect("lookup")
     }
 
-    pub async fn find_peer(&mut self, peer_id: &PeerId) -> Result<Option<KadPeer>> {
+    pub async fn find_peer(&mut self, peer_id: &PeerId) -> Result<KadPeer> {
         let (tx, rx) = oneshot::channel();
         self.control_sender
             .send(ControlCommand::FindPeer(peer_id.clone(), tx))

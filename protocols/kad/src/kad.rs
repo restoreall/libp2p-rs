@@ -49,6 +49,7 @@ use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
 use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
 use futures::lock::Mutex;
+use crate::task_limit::TaskLimiter;
 
 
 type Result<T> = std::result::Result<T, KadError>;
@@ -575,7 +576,13 @@ impl<TStore> Kademlia<TStore>
         let mut q = self.prepare_iterative_query(QueryType::GetClosestPeers, key);
 
         q.run(|r| {
-            f(r.map(|r|r.closest_peers));
+            f(r.and_then(|r|{
+                if r.closest_peers.is_empty() {
+                    Err(KadError::NotFound)
+                } else {
+                    Ok(r.closest_peers)
+                }
+            }));
         });
     }
 
@@ -585,12 +592,18 @@ impl<TStore> Kademlia<TStore>
     /// Fn(Result<Option<KadPeer>>).
     fn find_peer<F>(&mut self, key: record::Key, f: F)
         where
-            F: FnOnce(Result<Option<KadPeer>>) + Send + 'static
+            F: FnOnce(Result<KadPeer>) + Send + 'static
     {
         let mut q = self.prepare_iterative_query(QueryType::FindPeer, key);
 
         q.run(|r| {
-            f(r.map(|r|r.found_peer));
+            f(r.and_then(|r|{
+                if let Some(peer)= r.found_peer {
+                    Ok(peer)
+                } else {
+                    Err(KadError::NotFound)
+                }
+            }));
         });
     }
 
@@ -612,7 +625,13 @@ impl<TStore> Kademlia<TStore>
             let mut q = self.prepare_iterative_query(QueryType::GetProviders { count: remaining, local: Some(provider_peers) }, key);
 
             q.run(|r|{
-                f(r.map(|r|r.providers));
+                f(r.and_then(|r|{
+                    if r.providers.is_empty() {
+                        Err(KadError::NotFound)
+                    } else {
+                        Ok(r.providers)
+                    }
+                }));
             });
         }
 
@@ -644,7 +663,13 @@ impl<TStore> Kademlia<TStore>
             let needed = quorum - records.len();
             let mut q = self.prepare_iterative_query(QueryType::GetRecord { quorum_needed: needed, local: Some(records) }, key);
             q.run(|r|{
-                f(r.map(|r|r.records));
+                f(r.and_then(|r|{
+                    if r.records.is_empty() {
+                        Err(KadError::NotFound)
+                    } else {
+                        Ok(r.records)
+                    }
+                }));
             });
         }
     }
@@ -678,40 +703,44 @@ impl<TStore> Kademlia<TStore>
         record.expires = record.expires.or_else(||
             self.record_ttl.map(|ttl| Instant::now() + ttl));
         //let quorum = self.queries.config().replication_factor.get();
-
+        let alpha_value = self.query_config.parallelism;
         let messengers = self.messengers.clone().expect("must be Some");
         // initialte the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(record.key.clone(), move |peers| {
-            // TODO:
-            if peers.is_ok() {
-                for peer in peers.unwrap() {
-                    let record = record.clone();
-                    let mut messengers = messengers.clone();
-                    task::spawn(async move {
-                        if let Ok(mut ms) = messengers.get_messenger(&peer.node_id).await {
-                            if ms.send_put_value(record).await.is_ok() {
-                                messengers.put_messenger(ms).await;
-                            }
-                            // otherwise, ms will be dropped here, a task will be spawned to close
-                            // the inner substream...
-                        }
-                    });
+            let peers = peers.and_then(|p| {
+                if p.is_empty() {
+                    Err(KadError::NotFound)
+                } else {
+                    Ok(p)
                 }
+            });
+
+            if let Err(e) = peers {
+                f(Err(e));
+            } else {
+                let mut limiter = TaskLimiter::new(alpha_value);
+                task::spawn(async move {
+                    for peer in peers.unwrap() {
+                        let record = record.clone();
+                        let mut messengers = messengers.clone();
+
+                        // TODO: quorum of PutValue???
+                        limiter.run(async move {
+                            if let Ok(mut ms) = messengers.get_messenger(&peer.node_id).await {
+                                if ms.send_put_value(record).await.is_ok() {
+                                    messengers.put_messenger(ms).await;
+                                }
+                                // otherwise, ms will be dropped here, a task will be spawned to close
+                                // the inner substream...
+                            }
+                        }).await;
+                    }
+                    let c = limiter.wait().await;
+                    log::info!("record announced to total {} peers", c);
+                    f(Ok(()))
+                });
             }
         });
-
-
-        // let target = kbucket::Key::new(record.key.clone());
-        // let peers = self.kbuckets.closest_keys(&target);
-        // let context = PutRecordContext::Publish;
-        // let info = QueryInfo::PutRecord {
-        //     context,
-        //     record,
-        //     quorum,
-        //     //phase: PutRecordPhase::GetClosestPeers
-        // };
-        // let inner = QueryInner::new(info);
-        // Ok(self.queries.add_iter_closest(target.clone(), peers, inner))
     }
 
     /// Removes the record with the given key from _local_ storage,
@@ -796,13 +825,48 @@ impl<TStore> Kademlia<TStore>
             key.clone(),
             self.kbuckets.local_key().preimage().clone(),
             local_addrs);
-        if let Err(e) = self.store.add_provider(record) {
+        if let Err(e) = self.store.add_provider(record.clone()) {
             f(Err(e));
             return;
         }
+        let alpha_value = self.query_config.parallelism;
+        let messengers = self.messengers.clone().expect("must be Some");
+
         // initialte the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(key, move |peers| {
-            // TODO:
+            let peers = peers.and_then(|p| {
+                if p.is_empty() {
+                    Err(KadError::NotFound)
+                } else {
+                    Ok(p)
+                }
+            });
+
+            if let Err(e) = peers {
+                f(Err(e));
+            } else {
+                let mut limiter = TaskLimiter::new(alpha_value);
+                task::spawn(async move {
+                    for peer in peers.unwrap() {
+                        let record = record.clone();
+                        let mut messengers = messengers.clone();
+
+                        // TODO: quorum of AddProvider???
+                        limiter.run(async move {
+                            if let Ok(mut ms) = messengers.get_messenger(&peer.node_id).await {
+                                if ms.send_add_provider(record).await.is_ok() {
+                                    messengers.put_messenger(ms).await;
+                                }
+                                // otherwise, ms will be dropped here, a task will be spawned to close
+                                // the inner substream...
+                            }
+                        }).await;
+                    }
+                    let c = limiter.wait().await;
+                    log::info!("provider announced to total {} peers", c);
+                    f(Ok(()))
+                });
+            }
         });
         // let target = kbucket::Key::new(key.clone());
         // let peers = self.kbuckets.closest_keys(&target);

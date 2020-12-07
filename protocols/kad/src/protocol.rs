@@ -49,8 +49,9 @@ use libp2prs_swarm::connection::Connection;
 use libp2prs_swarm::substream::Substream;
 use libp2prs_swarm::Control as SwarmControl;
 
-use crate::{dht_proto as proto, KadError};
+use crate::{dht_proto as proto, KadError, ProviderRecord};
 use crate::record::{self, Record};
+use crate::query::PeerRecord;
 
 /// The protocol name used for negotiating with multistream-select.
 pub const DEFAULT_PROTO_NAME: &[u8] = b"/ipfs/kad/1.0.0";
@@ -329,6 +330,18 @@ impl KadMessenger {
         self.reuse < self.config.max_reuse_count
     }
 
+    // send a message to peer.
+    async fn send_message(&mut self, request: KadRequestMsg) -> Result<(), KadError>
+    {
+        let proto_struct = req_msg_to_proto(request);
+        let mut buf = Vec::with_capacity(proto_struct.encoded_len());
+        proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
+        self.stream.write2(&buf).await?;
+
+        Ok(())
+    }
+
+    // send a request message to peer , then wait for the response.
     async fn send_request(&mut self, request: KadRequestMsg) -> Result<KadResponseMsg, KadError>
     {
         let proto_struct = req_msg_to_proto(request);
@@ -363,6 +376,19 @@ impl KadMessenger {
             KadResponseMsg::GetProviders { closer_peers, provider_peers } => Ok((closer_peers, provider_peers)),
             _ => Err(KadError::UnexpectedMessage("wrong message type received when GetProviders"))
         }
+    }
+
+    pub(crate) async fn send_add_provider(&mut self, provider_record: ProviderRecord) -> Result<(), KadError>
+    {
+        let provider = KadPeer {
+            node_id: provider_record.provider,
+            multiaddrs: provider_record.addresses,
+            connection_ty: KadConnectionType::Connected,
+        };
+
+        let req = KadRequestMsg::AddProvider { key: provider_record.key, provider };
+        self.send_message(req).await?;
+        Ok(())
     }
 
     pub(crate) async fn send_get_value(&mut self, key: record::Key) -> Result<(Vec<KadPeer>, Option<Record>), KadError>
