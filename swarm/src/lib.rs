@@ -250,7 +250,7 @@ type TransactionId = usize;
 /// Contains the state of the network, plus the way it should behave.
 pub struct Swarm {
     // to improve peerstore... we don't want to leak PeerStore
-    peers: PeerStore,
+    peer_store: PeerStore,
 
     /// The protocol multistream selector.
     muxer: Muxer,
@@ -318,10 +318,10 @@ impl Swarm {
         let (event_tx, event_rx) = mpsc::unbounded();
         let (ctrl_tx, ctrl_rx) = mpsc::channel(0);
 
-        let mut peers = PeerStore::default();
-        peers.keys.add_key(&key.clone().into_peer_id(), key.clone());
+        let peer_store = PeerStore::default();
+        peer_store.add_key(&key.clone().into_peer_id(), key.clone());
 
-        if let Err(e) = peers.load_data() {
+        if let Err(e) = peer_store.load_data() {
             if e.kind() != std::io::ErrorKind::UnexpectedEof {
                 log::info!("PeerStore load data error: {}", e);
             }
@@ -330,7 +330,7 @@ impl Swarm {
         let metric = Metric::new();
 
         Swarm {
-            peers,
+            peer_store,
             muxer: Muxer::new(),
             transports: Default::default(),
             local_peer_id: key.into_peer_id(),
@@ -408,7 +408,7 @@ impl Swarm {
     }
     /// Get a controller for Swarm.
     pub fn control(&self) -> Control {
-        Control::new(self.ctrl_sender.clone(), self.metric.clone())
+        Control::new(self.ctrl_sender.clone(), self.peer_store.clone(), self.metric.clone())
     }
 
     /// Makes progress for Swarm
@@ -528,7 +528,7 @@ impl Swarm {
             SwarmControlCmd::CloseSwarm => {
                 log::info!("closing the swarm...");
 
-                if let Err(e) = self.peers.save_data() {
+                if let Err(e) = self.peer_store.save_data() {
                     log::info!("PeerStore save data failed: {}", e);
                 }
                 let _ = self.event_sender.close_channel();
@@ -658,7 +658,7 @@ impl Swarm {
             .map(|p| p.protocol_name_str().to_string())
             .collect();
 
-        let public_key = self.peers.keys.get_key(self.local_peer_id()).unwrap().clone();
+        let public_key = self.peer_store.get_key(self.local_peer_id()).unwrap().clone();
 
         // TODO: complete it with protocol_version and agent_version
         IdentifyInfo {
@@ -768,9 +768,9 @@ impl Swarm {
             return;
         }
         // then check addrs, return error if none when DHT is not enabled
-        let r = self.peers.addrs.get_addr(&peer_id);
+        let r = self.peer_store.get_addr(&peer_id);
         let addrs = match r {
-            Some(l) if !l.is_empty() => dial::EitherDialAddr::Addresses(l.iter().map(|r| r.get_addr().clone()).collect()),
+            Some(l) if !l.is_empty() => dial::EitherDialAddr::Addresses(l.into_iter().map(|r| r.into_maddr()).collect()),
             _ => {
                 // if DHT is NOT enabled, reply with NoAddresses
                 if true
@@ -967,7 +967,7 @@ impl Swarm {
         let metric = self.metric.clone();
 
         // add local pubkey to keybook
-        self.peers.keys.add_key(&self.local_peer_id, stream_muxer.local_priv_key().public());
+        self.peer_store.add_key(&self.local_peer_id, stream_muxer.local_priv_key().public());
 
         // clone the stream_muxer, and then wrap into Connection, task_handle will be assigned later
         let mut connection = Connection::new(
@@ -1156,7 +1156,7 @@ impl Swarm {
         log::info!("after close {:?}", self.connections_by_id);
         log::info!("after close {:?}", self.connections_by_peer);
 
-        log::info!("close {:?}", self.peers.addrs);
+        log::info!("close {:?}", self.peer_store);
 
         Ok(())
     }
@@ -1172,7 +1172,7 @@ impl Swarm {
                     log::trace!("ping TTL={:?} for {:?}", ttl, connection);
                     // update peer store with the TTL
                     let peer_id = connection.stream_muxer().remote_peer();
-                    self.peers.addrs.update_addr(&peer_id, Duration::from_secs(1), ttl);
+                    self.peer_store.update_addr(&peer_id, Duration::from_secs(1), ttl);
                 }
                 Err(_) => {
                     log::info!("reach the max ping failure count, closing {:?}", connection);
@@ -1198,11 +1198,11 @@ impl Swarm {
                     log::trace!("identify observed_addr: {} info={:?} for {:?}", observed_addr, info, connection);
 
                     // Insert remote peer_id and public key into peerstore->KeyBook if non-exist
-                    self.peers.keys.add_key(&peer_id, remote_pubkey);
+                    self.peer_store.add_key(&peer_id, remote_pubkey);
 
                     // update peer store with the
-                    self.peers.addrs.add_addr(&peer_id, observed_addr, Duration::from_secs(1));
-                    self.peers.protos.add_protocol(&peer_id, info.protocols);
+                    self.peer_store.add_addr(&peer_id, observed_addr, Duration::from_secs(1));
+                    self.peer_store.add_protocol(&peer_id, info.protocols);
                     //
                 }
                 Err(err) => {
@@ -1215,7 +1215,7 @@ impl Swarm {
     }
 
     pub fn peer_addrs_add(&mut self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration) {
-        self.peers.addrs.add_addr(peer_id, addr, ttl);
+        self.peer_store.add_addr(peer_id, addr, ttl);
     }
 }
 

@@ -18,11 +18,15 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use std::sync::Arc;
+use std::time::Duration;
+use smallvec::SmallVec;
 use futures::{
     channel::{mpsc, oneshot},
     prelude::*,
 };
 use libp2prs_core::{PeerId, Multiaddr};
+use libp2prs_core::peerstore::{PeerStore, AddrBookRecord};
 
 use crate::connection::ConnectionId;
 use crate::identify::IdentifyInfo;
@@ -30,8 +34,7 @@ use crate::metrics::metric::Metric;
 use crate::network::NetworkInfo;
 use crate::substream::{StreamId, Substream};
 use crate::{ProtocolId, SwarmError};
-use std::sync::Arc;
-use std::time::Duration;
+
 
 type Result<T> = std::result::Result<T, SwarmError>;
 
@@ -66,26 +69,19 @@ pub enum SwarmControlCmd {
 /// this controller can be used to concurrently direct the connection,
 /// e.g. to open a new stream to the remote or to close the connection.
 ///
-//#[derive(Debug)]
+#[derive(Clone)]
 pub struct Control {
     /// Command channel to `Connection`.
     sender: mpsc::Sender<SwarmControlCmd>,
+    /// PeerStore
+    peer_store: PeerStore,
     /// Swarm metric
     metric: Arc<Metric>,
 }
 
-impl Clone for Control {
-    fn clone(&self) -> Self {
-        Control {
-            sender: self.sender.clone(),
-            metric: self.metric.clone(),
-        }
-    }
-}
-
 impl Control {
-    pub(crate) fn new(sender: mpsc::Sender<SwarmControlCmd>, metric: Arc<Metric>) -> Self {
-        Control { sender, metric }
+    pub(crate) fn new(sender: mpsc::Sender<SwarmControlCmd>, peer_store: PeerStore, metric: Arc<Metric>) -> Self {
+        Control { sender, peer_store, metric }
     }
 
     /// Get recv package count&bytes
@@ -155,5 +151,10 @@ impl Control {
         std::thread::sleep(Duration::from_secs(5));
         log::info!("Exit success");
         Ok(())
+    }
+
+    /// Get multiaddr of a peer.
+    pub fn get_addr(&self, peer_id: &PeerId) -> Option<SmallVec<[AddrBookRecord; 4]>> {
+        self.peer_store.get_addr(peer_id)
     }
 }
