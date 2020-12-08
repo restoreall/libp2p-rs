@@ -29,14 +29,8 @@
 use std::{convert::TryFrom, time::Duration, time::Instant};
 use std::io;
 use std::error::Error;
-use unsigned_varint::codec;
-use bytes::BytesMut;
-use codec::UviBytes;
 use prost::Message;
-use futures::prelude::*;
-use futures::channel::{mpsc, oneshot};
-use futures_codec::Framed;
-use futures::SinkExt;
+use futures::channel::oneshot;
 
 use async_trait::async_trait;
 use async_std::task;
@@ -51,7 +45,7 @@ use libp2prs_swarm::Control as SwarmControl;
 
 use crate::{dht_proto as proto, KadError, ProviderRecord};
 use crate::record::{self, Record};
-use crate::query::PeerRecord;
+use crate::kad::KadPoster;
 
 /// The protocol name used for negotiating with multistream-select.
 pub const DEFAULT_PROTO_NAME: &[u8] = b"/ipfs/kad/1.0.0";
@@ -206,18 +200,18 @@ pub struct KadProtocolHandler {
     allow_listening: bool,
     /// Time after which we close an idle connection.
     idle_timeout: Duration,
-
-    message_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>,
+    /// Used to post ProtocolEvent to Kad main loop.
+    poster: KadPoster,
 }
 
 impl KadProtocolHandler {
     /// Make a new KadProtocolHandler.
-    pub fn new (config: KademliaProtocolConfig, message_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
+    pub(crate) fn new (config: KademliaProtocolConfig, poster: KadPoster) -> Self {
         KadProtocolHandler {
             config,
             allow_listening: false,
             idle_timeout: Duration::from_secs(10),
-            message_tx,
+            poster,
         }
     }
 
@@ -244,16 +238,16 @@ impl UpgradeInfo for KadProtocolHandler {
 impl Notifiee for KadProtocolHandler {
     fn connected(&mut self, conn: &mut Connection) {
         let peer_id = conn.remote_peer();
-        let mut tx = self.message_tx.clone();
+        let mut tx = self.poster.clone();
         task::spawn(async move {
-            let _ = tx.send(ProtocolEvent::PeerConnected(peer_id)).await;
+            let _ = tx.post(ProtocolEvent::PeerConnected(peer_id)).await;
         });
     }
     fn disconnected(&mut self, conn: &mut Connection) {
         let peer_id = conn.remote_peer();
-        let mut tx = self.message_tx.clone();
+        let mut tx = self.poster.clone();
         task::spawn(async move {
-            let _ = tx.send(ProtocolEvent::PeerDisconnected(peer_id)).await;
+            let _ = tx.post(ProtocolEvent::PeerDisconnected(peer_id)).await;
         });
     }
 }
@@ -273,7 +267,7 @@ impl ProtocolHandler for KadProtocolHandler {
             // For AddProvider request, KadResponse is not needed
             let (tx, rx) = oneshot::channel();
             let evt = ProtocolEvent::KadRequest { request, source: source.clone(), reply: tx };
-            self.message_tx.send(evt).await?;
+            self.poster.post(evt).await?;
             let response = rx.await??;
 
             if let Some(response) = response {
@@ -411,90 +405,6 @@ impl KadMessenger {
         }
     }
 }
-
-
-/*
-impl<C> ProtocolHandler<C> for KadProtocolHandler
-where
-    C: AsyncRead + AsyncWrite + Unpin,
-{
-    type Output = KadInStreamSink<C>;
-    type Future = future::Ready<Result<Self::Output, io::Error>>;
-    type Error = io::Error;
-
-    fn upgrade_inbound(self, incoming: C, _: Self::Info) -> Self::Future {
-        let mut codec = UviBytes::default();
-        codec.set_max_len(self.max_packet_size);
-
-        future::ok(
-            Framed::new(incoming, codec)
-                .err_into()
-                .with::<_, _, fn(_) -> _, _>(|response| {
-                    let proto_struct = resp_msg_to_proto(response);
-                    let mut buf = Vec::with_capacity(proto_struct.encoded_len());
-                    proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
-                    future::ready(Ok(io::Cursor::new(buf)))
-                })
-                .and_then::<_, fn(_) -> _>(|bytes| {
-                    let request = match proto::Message::decode(bytes) {
-                        Ok(r) => r,
-                        Err(err) => return future::ready(Err(err.into()))
-                    };
-                    future::ready(proto_to_req_msg(request))
-                }),
-        )
-    }
-}
-
-impl<C> OutboundUpgrade<C> for KadProtocolHandler
-where
-    C: AsyncRead + AsyncWrite + Unpin,
-{
-    type Output = KadOutStreamSink<C>;
-    type Future = future::Ready<Result<Self::Output, io::Error>>;
-    type Error = io::Error;
-
-    fn upgrade_outbound(self, incoming: C, _: Self::Info) -> Self::Future {
-        let mut codec = UviBytes::default();
-        codec.set_max_len(self.max_packet_size);
-
-        future::ok(
-            Framed::new(incoming, codec)
-                .err_into()
-                .with::<_, _, fn(_) -> _, _>(|request| {
-                    let proto_struct = req_msg_to_proto(request);
-                    let mut buf = Vec::with_capacity(proto_struct.encoded_len());
-                    proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
-                    future::ready(Ok(io::Cursor::new(buf)))
-                })
-                .and_then::<_, fn(_) -> _>(|bytes| {
-                    let response = match proto::Message::decode(bytes) {
-                        Ok(r) => r,
-                        Err(err) => return future::ready(Err(err.into()))
-                    };
-                    future::ready(proto_to_resp_msg(response))
-                }),
-        )
-    }
-}
-*/
-/// Sink of responses and stream of requests.
-pub type KadInStreamSink<S> = KadStreamSink<S, KadResponseMsg, KadRequestMsg>;
-
-/// Sink of requests and stream of responses.
-pub type KadOutStreamSink<S> = KadStreamSink<S, KadRequestMsg, KadResponseMsg>;
-
-pub type KadStreamSink<S, A, B> = stream::AndThen<
-    sink::With<
-        stream::ErrInto<Framed<S, UviBytes<io::Cursor<Vec<u8>>>>, io::Error>,
-        io::Cursor<Vec<u8>>,
-        A,
-        future::Ready<Result<io::Cursor<Vec<u8>>, io::Error>>,
-        fn(A) -> future::Ready<Result<io::Cursor<Vec<u8>>, io::Error>>,
-    >,
-    future::Ready<Result<B, io::Error>>,
-    fn(BytesMut) -> future::Ready<Result<B, io::Error>>,
->;
 
 /// Request that we can send to a peer or that we received from a peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -903,7 +813,7 @@ mod tests {
 
 /// Event produced by the Kademlia handler.
 #[derive(Debug)]
-pub enum ProtocolEvent<TUserData> {
+pub enum ProtocolEvent {
     /// A new connection from peer_id is opened.
     ///
     /// This notification comes from Protocol Notifiee trait.
@@ -945,97 +855,5 @@ pub enum ProtocolEvent<TUserData> {
         /// KadResponseMsg is wrapped by Option<T>
         reply: oneshot::Sender<Result<Option<KadResponseMsg>, KadError>>
     },
-
-    /// Response to an `KademliaHandlerIn::FindNodeReq`.
-    FindNodeRes {
-        /// Results of the request.
-        closer_peers: Vec<KadPeer>,
-        /// The user data passed to the `FindNodeReq`.
-        user_data: TUserData,
-    },
-
-    /// Response to an `KademliaHandlerIn::GetProvidersReq`.
-    GetProvidersRes {
-        /// Nodes closest to the key.
-        closer_peers: Vec<KadPeer>,
-        /// Known providers for this key.
-        provider_peers: Vec<KadPeer>,
-        /// The user data passed to the `GetProvidersReq`.
-        user_data: TUserData,
-    },
-
-    /// An error happened when performing a query.
-    QueryError {
-        /// The error that happened.
-        error: KadError,
-        /// The user data passed to the query.
-        user_data: TUserData,
-    },
-
-    /// Response to a `KademliaHandlerIn::GetRecord`.
-    GetRecordRes {
-        /// The result is present if the key has been found
-        record: Option<Record>,
-        /// Nodes closest to the key.
-        closer_peers: Vec<KadPeer>,
-        /// The user data passed to the `GetValue`.
-        user_data: TUserData,
-    },
-
-    /// Response to a request to store a record.
-    PutRecordRes {
-        /// The key of the stored record.
-        key: record::Key,
-        /// The value of the stored record.
-        value: Vec<u8>,
-        /// The user data passed to the `PutValue`.
-        user_data: TUserData,
-    }
 }
 
-
-/// Process a Kademlia message that's supposed to be a response to one of our requests.
-fn process_kad_response<TUserData>(
-    event: KadResponseMsg,
-    user_data: TUserData,
-) -> ProtocolEvent<TUserData> {
-    // TODO: must check that the response corresponds to the request
-    match event {
-        KadResponseMsg::Pong => {
-            // We never send out pings.
-            ProtocolEvent::QueryError {
-                error: KadError::UnexpectedMessage("We never send out pings"),
-                user_data,
-            }
-        }
-        KadResponseMsg::FindNode { closer_peers } => {
-            ProtocolEvent::FindNodeRes {
-                closer_peers,
-                user_data,
-            }
-        },
-        KadResponseMsg::GetProviders {
-            closer_peers,
-            provider_peers,
-        } => ProtocolEvent::GetProvidersRes {
-            closer_peers,
-            provider_peers,
-            user_data,
-        },
-        KadResponseMsg::GetValue {
-            record,
-            closer_peers,
-        } => ProtocolEvent::GetRecordRes {
-            record,
-            closer_peers,
-            user_data,
-        },
-        KadResponseMsg::PutValue { key, value, .. } => {
-            ProtocolEvent::PutRecordRes {
-                key,
-                value,
-                user_data,
-            }
-        }
-    }
-}

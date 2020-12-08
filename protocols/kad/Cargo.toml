@@ -12,9 +12,7 @@ categories = ["network-programming", "asynchronous"]
 [dependencies]
 arrayvec = "0.5.1"
 bytes = "0.5"
-either = "1.5"
 fnv = "1.0"
-futures_codec = "0.4"
 futures = "0.3.1"
 log = "0.4"
 multihash = "0.11.3"
@@ -22,12 +20,11 @@ prost = "0.6.1"
 rand = "0.7.2"
 sha2 = "0.9.1"
 smallvec = "1.0"
-wasm-timer = "0.2"
 uint = "0.8"
-unsigned-varint = { version = "0.5", features = ["futures-codec"] }
 void = "1.0"
 async-trait = "0.1"
 async-std = "1.6"
+wasm-timer = "0.2"
 
 libp2prs-core = { path = "../../core", version = "0.1.0", package = "libp2prs-core" }
 libp2prs-traits = { path = "../../traits", version = "0.1.0", package = "libp2prs-traits" }

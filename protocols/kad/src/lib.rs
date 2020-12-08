@@ -90,6 +90,7 @@ use std::error::Error;
 
 use libp2prs_core::PeerId;
 use libp2prs_swarm::SwarmError;
+use futures::channel::mpsc;
 
 /// The `k` parameter of the Kademlia specification.
 ///
@@ -152,6 +153,9 @@ pub enum KadError {
     /// Error while getting value.
     GetRecord,
 
+    /// Internal error, e.g., mpsc::SendError
+    Internal,
+
     /// Error while decoding protobuf.
     Decode,
 
@@ -189,6 +193,11 @@ impl Error for KadError {
     }
 }
 
+impl From<mpsc::SendError> for KadError {
+    fn from(_: mpsc::SendError) -> Self {
+        KadError::Internal
+    }
+}
 
 impl From<std::io::Error> for KadError {
     fn from(err: std::io::Error) -> Self {

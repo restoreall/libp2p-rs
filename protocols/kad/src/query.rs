@@ -21,8 +21,8 @@
 use std::{time::Instant, time::Duration, num::NonZeroUsize};
 use fnv::FnvHashMap;
 use async_std::task;
+
 use libp2prs_core::PeerId;
-use libp2prs_swarm::Control as SwarmControl;
 
 use crate::{ALPHA_VALUE, K_VALUE, BETA_VALUE, KadError, record};
 use crate::kbucket::{Key, KeyBytes, Distance};
@@ -35,10 +35,9 @@ use peers::fixed::FixedPeersIter;
 use futures::channel::mpsc;
 use futures::{StreamExt, SinkExt};
 use std::collections::BTreeMap;
-use async_std::task::JoinHandle;
 
-use crate::protocol::{ProtocolEvent, KadPeer, KadConnectionType, KademliaProtocolConfig, KadMessenger};
-use crate::kad::MessengerManager;
+use crate::protocol::{ProtocolEvent, KadPeer, KadConnectionType};
+use crate::kad::{MessengerManager, KadPoster};
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -358,8 +357,8 @@ pub(crate) struct IterativeQuery<'a> {
     config: &'a QueryConfig,
     /// The seed peers used to start the query.
     seeds: Vec<Key<PeerId>>,
-    /// The channel tx used to send message to Kad main loop.
-    event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>
+    /// The KadPoster used to post ProtocolEvent to Kad main loop.
+    poster: KadPoster
 }
 
 pub(crate) enum QueryUpdate {
@@ -512,7 +511,7 @@ impl<'a> IterativeQuery<'a>
 {
     pub(crate) fn new(query_type: QueryType, key: record::Key, messenger: MessengerManager,
                       local_id: PeerId, config: &'a QueryConfig, seeds: Vec<Key<PeerId>>,
-                      event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
+                      poster: KadPoster) -> Self {
         Self {
             query_type,
             key,
@@ -520,7 +519,7 @@ impl<'a> IterativeQuery<'a>
             local_id,
             config,
             seeds,
-            event_tx,
+            poster,
         }
     }
 
@@ -566,7 +565,7 @@ impl<'a> IterativeQuery<'a>
         let alpha_value = self.config.parallelism.get();
         let beta_value = self.config.beta_value.get();
         let k_value = self.config.replication_factor.get();
-        let mut event_tx = self.event_tx.clone();
+        let mut poster = self.poster.clone();
 
         // the channel used to deliver the result of each jobs
         let (mut tx, mut rx) = mpsc::channel(alpha_value);
@@ -599,7 +598,7 @@ impl<'a> IterativeQuery<'a>
                         closest_peers.set_peer_state(&source, PeerState::Succeeded);
 
                         // TODO: signal the k-buckets for new peer found
-                        let _ = event_tx.send(ProtocolEvent::KadPeerFound(source.clone(), true)).await;
+                        let _ = poster.post(ProtocolEvent::KadPeerFound(source.clone(), true)).await;
 
                         // handle different query type, check if we are done querying
                         match qt {
@@ -661,7 +660,7 @@ impl<'a> IterativeQuery<'a>
                         log::info!("unreachable peer {:?} detected", peer);
                         closest_peers.set_peer_state(&peer, PeerState::Unreachable);
                         // TODO: signal for dead peer detected
-                        let _ = event_tx.send(ProtocolEvent::KadPeerStopped(peer)).await;
+                        let _ = poster.post(ProtocolEvent::KadPeerStopped(peer)).await;
                     }
                 }
 
@@ -950,7 +949,7 @@ impl QueryStats {
 ////////////////////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
-    use crate::record::store::MemoryStore;
+    //use crate::record::store::MemoryStore;
     use futures::{executor::block_on, future::poll_fn};
     use quickcheck::*;
     use super::*;

@@ -38,7 +38,6 @@ use async_std::task;
 use libp2prs_core::{PeerId, Multiaddr};
 use libp2prs_swarm::substream::Substream;
 use libp2prs_swarm::Control as SwarmControl;
-use libp2prs_traits::{ReadEx, WriteEx};
 
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger};
 use crate::control::{Control, ControlCommand};
@@ -114,8 +113,8 @@ pub struct Kademlia<TStore> {
     // peer_rx: mpsc::UnboundedReceiver<PeerEvent>,
 
     /// Used to handle the incoming Kad events.
-    event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>,
-    event_rx: mpsc::UnboundedReceiver<ProtocolEvent<u32>>,
+    event_tx: mpsc::UnboundedSender<ProtocolEvent>,
+    event_rx: mpsc::UnboundedReceiver<ProtocolEvent>,
 
     /// Used to control the Kademlia.
     /// control_tx becomes the Control and control_rx is monitored by
@@ -342,6 +341,21 @@ impl KademliaConfig {
     }
 }
 
+/// KadPoster is used to generate ProtocolEvent to Kad main loop.
+#[derive(Clone, Debug)]
+pub(crate) struct KadPoster(mpsc::UnboundedSender<ProtocolEvent>);
+
+impl KadPoster {
+    pub(crate) fn new(tx: mpsc::UnboundedSender<ProtocolEvent>) -> Self {
+        Self(tx)
+    }
+
+    pub(crate) async fn post(&mut self, event: ProtocolEvent) -> Result<()> {
+        let r = self.0.send(event).await?;
+        Ok(r)
+    }
+}
+
 impl<TStore> Kademlia<TStore>
     where
             for<'a> TStore: RecordStore<'a> + Send + 'static
@@ -399,6 +413,10 @@ impl<TStore> Kademlia<TStore>
             connection_idle_timeout: config.connection_idle_timeout,
             local_addrs: HashSet::new(),
         }
+    }
+
+    fn get_poster(&self) -> KadPoster {
+        KadPoster::new(self.event_tx.clone())
     }
 
 /*
@@ -563,7 +581,7 @@ impl<TStore> Kademlia<TStore>
         let query = IterativeQuery::new(qt, key,
                                         self.messengers.clone().expect("must be Some"),
                                         local_id, &self.query_config,
-                                        seeds, self.event_tx.clone());
+                                        seeds, self.get_poster());
 
         query
     }
@@ -627,7 +645,7 @@ impl<TStore> Kademlia<TStore>
         where
             F: FnOnce(Result<Vec<PeerRecord>>) + Send + 'static
     {
-        let quorum = self.queries.config().replication_factor.get();
+        let quorum = self.query_config.replication_factor.get();
         let mut records = Vec::with_capacity(quorum);
 
         if let Some(record) = self.store.get(&key) {
@@ -863,7 +881,7 @@ impl<TStore> Kademlia<TStore>
             self.kbuckets
                 .closest(target)
                 .filter(|e| e.node.key.preimage() != source)
-                .take(self.queries.config().replication_factor.get())
+                .take(self.query_config.replication_factor.get())
                 .map(KadPeer::from)
                 .collect()
         }
@@ -912,7 +930,7 @@ impl<TStore> Kademlia<TStore>
                 } else {
                     None
                 })
-            .take(self.queries.config().replication_factor.get())
+            .take(self.query_config.replication_factor.get())
             .collect()
     }
 
@@ -933,8 +951,8 @@ impl<TStore> Kademlia<TStore>
     }
 
     /// Starts an iterative `PUT_VALUE` query for the given record.
-    fn start_put_record(&mut self, record: Record, quorum: Quorum, context: PutRecordContext) {
-        let quorum = quorum.eval(self.queries.config().replication_factor);
+    fn start_put_record(&mut self, record: Record, context: PutRecordContext) {
+        let quorum = self.query_config.replication_factor;
         let target = kbucket::Key::new(record.key.clone());
         let peers = self.kbuckets.closest_keys(&target);
         let info = QueryInfo::PutRecord {
@@ -1049,7 +1067,7 @@ impl<TStore> Kademlia<TStore>
         // outside of the k closest nodes to a key.
         let target = kbucket::Key::new(record.key.clone());
         let num_between = self.kbuckets.count_nodes_between(&target);
-        let k = self.queries.config().replication_factor.get();
+        let k = self.query_config.replication_factor.get();
         let num_beyond_k = (usize::max(k, num_between) - k) as u32;
         let expiration = self.record_ttl.map(|ttl| now + exp_decrease(ttl, num_beyond_k));
         // The smaller TTL prevails. Only if neither TTL is set is the record
@@ -1117,7 +1135,7 @@ impl<TStore> Kademlia<TStore>
 
     /// Get the protocol handler of Kademlia, swarm will call "handle" func after stream negotiation.
     pub fn handler(&self) -> KadProtocolHandler {
-        KadProtocolHandler::new(self.protocol_config.clone(), self.event_tx.clone())
+        KadProtocolHandler::new(self.protocol_config.clone(), self.get_poster())
     }
     /// Get the controller of Kademlia, which can be used to manipulate the Kad-DHT.
     pub fn control(&self) -> Control {
@@ -1265,7 +1283,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     // Handle Kad events sent from protocol handler.
-    async fn handle_events(&mut self, msg: Option<ProtocolEvent<u32>>) -> Result<()> {
+    async fn handle_events(&mut self, msg: Option<ProtocolEvent>) -> Result<()> {
         match msg {
             Some(ProtocolEvent::PeerConnected(peer_id)) => {
                 self.handle_peer_connected(peer_id).await;
