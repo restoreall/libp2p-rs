@@ -19,7 +19,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 use std::time::{Duration, Instant};
-use std::collections::{HashMap, VecDeque, HashSet};
 use std::num::NonZeroUsize;
 use std::borrow::Borrow;
 use smallvec::SmallVec;
@@ -32,6 +31,7 @@ use futures::{
     prelude::*,
     select,
 };
+use futures::lock::Mutex;
 
 use async_std::task;
 
@@ -42,12 +42,11 @@ use libp2prs_swarm::Control as SwarmControl;
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger};
 use crate::control::{Control, ControlCommand};
 
-use crate::query::{QueryId, QueryPool, QueryConfig, QueryStats, IterativeQuery, QueryType, PeerRecord};
+use crate::query::{QueryPool, QueryConfig, QueryStats, IterativeQuery, QueryType, PeerRecord};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
 use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
-use futures::lock::Mutex;
 use crate::task_limit::TaskLimiter;
 
 
@@ -100,7 +99,7 @@ pub struct Kademlia<TStore> {
     // queued_events: VecDeque<NetworkBehaviourAction<KademliaHandlerIn<QueryId>, KademliaEvent>>,
 
     /// The currently known addresses of the local node.
-    local_addrs: HashSet<Multiaddr>,
+    local_addrs: FnvHashSet<Multiaddr>,
 
     /// The record storage.
     store: TStore,
@@ -411,7 +410,7 @@ impl<TStore> Kademlia<TStore>
             record_ttl: config.record_ttl,
             provider_record_ttl: config.provider_record_ttl,
             connection_idle_timeout: config.connection_idle_timeout,
-            local_addrs: HashSet::new(),
+            local_addrs: FnvHashSet::default(),
         }
     }
 
@@ -683,11 +682,18 @@ impl<TStore> Kademlia<TStore>
     ///
     /// The result of this operation is delivered into the callback
     /// Fn(Result<()>).
-    fn put_record<F>(&mut self, mut record: Record, f: F)
+    fn put_record<F>(&mut self, key: record::Key, value: Vec<u8>, f: F)
         where
             F: FnOnce(Result<()>) + Send + 'static
     {
         // TODO: probably we should check if there is a old record with the same key?
+
+        let mut record = Record {
+            key,
+            value,
+            publisher: None,
+            expires: None,
+        };
 
         record.publisher = Some(self.kbuckets.local_key().preimage().clone());
         if let Err(e) = self.store.put(record.clone()) {
@@ -765,19 +771,11 @@ impl<TStore> Kademlia<TStore>
     ///
     /// > **Note**: Bootstrapping requires at least one node of the DHT to be known.
     /// > See [`Kademlia::add_address`].
-    pub fn bootstrap(&mut self) -> Result<QueryId> {
+    fn bootstrap(&mut self) {
         let local_key = self.kbuckets.local_key().clone();
-        let info = QueryInfo::Bootstrap {
-            peer: local_key.preimage().clone(),
-            remaining: None
-        };
-        let peers = self.kbuckets.closest_keys(&local_key).collect::<Vec<_>>();
-        if peers.is_empty() {
-            Err(KadError::NoKnownPeers)
-        } else {
-            let inner = QueryInner::new(info);
-            Ok(self.queries.add_iter_closest(local_key, peers, inner))
-        }
+        let key = local_key.into_preimage().into_bytes();
+
+        self.get_closest_peers(key.into(), |_| {});
     }
 
     /// Performs publishing as a provider of a value for the given key.
@@ -1224,7 +1222,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     // Always wait to send message.
-    async fn handle_sending_message(&mut self, rpid: PeerId, mut writer: Substream) {
+    async fn handle_sending_message(&mut self, rpid: PeerId, writer: Substream) {
         // let (mut tx, mut rx) = mpsc::unbounded();
         //
         // let _ = tx.send(self.get_hello_packet()).await;
@@ -1270,7 +1268,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     // Check if stream / connection is closed.
-    async fn handle_peer_eof(&mut self, rpid: PeerId, mut reader: Substream) {
+    async fn handle_peer_eof(&mut self, rpid: PeerId, reader: Substream) {
         // let mut peer_dead_tx = self.peer_tx.clone();
         // task::spawn(async move {
         //     loop {
@@ -1399,10 +1397,14 @@ impl<TStore> Kademlia<TStore>
                 });
             }
             Some(ControlCommand::Providing(key, reply)) => {
-                let _ = reply.send(());
+                self.start_providing(key, |r| {
+                    let _ = reply.send(r);
+                });
             }
-            Some(ControlCommand::PutValue(key, reply)) => {
-                let _ = reply.send(());
+            Some(ControlCommand::PutValue(key, value, reply)) => {
+                self.put_record(key, value, |r| {
+                    let _ = reply.send(r);
+                });
             }
             Some(ControlCommand::GetValue(key, reply)) => {
                 self.get_record(key, |r| {
@@ -1587,7 +1589,7 @@ pub enum QueryInfo {
         /// The key for which to search for providers.
         key: record::Key,
         /// The found providers.
-        providers: HashSet<PeerId>,
+        providers: FnvHashSet<PeerId>,
     },
 
     /// A (repeated) query initiated by [`Kademlia::start_providing`].

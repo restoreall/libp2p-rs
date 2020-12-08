@@ -40,9 +40,9 @@ pub(crate) enum ControlCommand {
     /// Provide adds the given key to the content routing system.
     /// It also announces it, otherwise it is just kept in the local
     /// accounting of which objects are being provided.
-    Providing(record::Key, oneshot::Sender<()>),
+    Providing(record::Key, oneshot::Sender<Result<()>>),
     /// Adds value corresponding to given Key.
-    PutValue(record::Key, oneshot::Sender<()>),
+    PutValue(record::Key, Vec<u8>, oneshot::Sender<Result<()>>),
     /// Searches value corresponding to given Key.
     GetValue(record::Key, oneshot::Sender<Result<Vec<PeerRecord>>>),
 }
