@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 use async_std::task::JoinHandle;
 
 use crate::protocol::{ProtocolEvent, KadPeer, KadConnectionType, KademliaProtocolConfig, KadMessenger};
-use crate::kad::MessengerCache;
+use crate::kad::MessengerManager;
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -270,7 +270,7 @@ impl Default for QueryConfig {
 struct QueryJob {
     key: record::Key,
     qt: QueryType,
-    messengers: MessengerCache,
+    messengers: MessengerManager,
     peer: PeerId,
     tx: mpsc::Sender<QueryUpdate>,
 }
@@ -349,7 +349,7 @@ pub(crate) struct IterativeQuery<'a> {
     /// The target to be queried.
     key: record::Key,
     /// The Messenger is used to send/receive Kad messages.
-    messenger: MessengerCache,
+    messenger: MessengerManager,
     /// The query type to be executed.
     query_type: QueryType,
     /// The local peer Id of myself.
@@ -390,10 +390,10 @@ pub struct PeerRecord {
 
 /// The query result returned by IterativeQuery.
 pub(crate) struct QueryResult {
-    pub(crate) closest_peers: Vec<KadPeer>,
+    pub(crate) closest_peers: Option<Vec<KadPeer>>,
     pub(crate) found_peer: Option<KadPeer>,
-    pub(crate) providers: Vec<KadPeer>,
-    pub(crate) records: Vec<PeerRecord>,
+    pub(crate) providers: Option<Vec<KadPeer>>,
+    pub(crate) records: Option<Vec<PeerRecord>>,
 }
 
 pub(crate) struct ClosestPeers {
@@ -510,7 +510,7 @@ pub enum QueryType {
 
 impl<'a> IterativeQuery<'a>
 {
-    pub(crate) fn new(query_type: QueryType, key: record::Key, messenger: MessengerCache,
+    pub(crate) fn new(query_type: QueryType, key: record::Key, messenger: MessengerManager,
                       local_id: PeerId, config: &'a QueryConfig, seeds: Vec<Key<PeerId>>,
                       event_tx: mpsc::UnboundedSender<ProtocolEvent<u32>>) -> Self {
         Self {
@@ -540,20 +540,20 @@ impl<'a> IterativeQuery<'a>
         let mut closest_peers = ClosestPeers::new(self.key.clone());
         // prepare the query result
         let mut query_results = QueryResult {
-            closest_peers: vec![],
+            closest_peers: None,
             found_peer: None,
-            providers: vec![],
-            records: vec![],
+            providers: None,
+            records: None,
         };
 
         // extract local PeerRecord or Providers from QueryType
         // local items are parts of the final result
         match &mut self.query_type {
             QueryType::GetProviders { count:_, local } => {
-                query_results.providers = local.take().unwrap();
+                query_results.providers = local.take();
             }
             QueryType::GetRecord { quorum_needed:_, local } => {
-                query_results.records = local.take().unwrap();
+                query_results.records = local.take();
             }
             _ => {}
         }
@@ -617,20 +617,38 @@ impl<'a> IterativeQuery<'a>
                             QueryType::GetProviders { count, .. } => {
                                 // update providers
                                 if let Some(provider) = provider {
-                                    query_results.providers.extend(provider);
-                                }
+                                    log::trace!("GetProviders: provider found {:?} key={:?}", provider, key);
 
-                                if query_results.providers.len() >= count {
-                                    log::info!("GetProviders: got enough provider for {:?}, limit={}", key, count);
-                                    break;
+                                    if !provider.is_empty() {
+                                        // append or create the query_results.providers
+                                        if let Some(mut old) = query_results.providers.take() {
+                                            old.extend(provider);
+                                            query_results.providers = Some(old);
+                                        } else {
+                                            query_results.providers = Some(provider);
+                                        }
+                                        // check if we have enough providers
+                                        if query_results.providers.as_ref().map_or(0, |p|p.len()) >= count {
+                                            log::info!("GetProviders: got enough provider for {:?}, limit={}", key, count);
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                             QueryType::GetRecord { quorum_needed, .. } => {
                                 if let Some(record) = record {
                                     log::trace!("GetRecord: record found {:?} key={:?}", record, key);
-                                    query_results.records.push(PeerRecord { peer: Some(source), record });
 
-                                    if query_results.records.len() > quorum_needed {
+                                    let pr = PeerRecord { peer: Some(source), record };
+                                    if let Some(mut old) = query_results.records.take() {
+                                        old.push(pr);
+                                        query_results.records = Some(old);
+                                    } else {
+                                        query_results.records = Some(vec![pr]);
+                                    }
+
+                                    // check if we have enough records
+                                    if query_results.records.as_ref().map_or(0, |r|r.len()) > quorum_needed {
                                         log::info!("GetRecord: got enough records for key={:?}", key);
                                         break;
                                     }
@@ -692,7 +710,10 @@ impl<'a> IterativeQuery<'a>
 
             // collect the query result
             let wanted_states = vec!(PeerState::NotContacted, PeerState::Waiting, PeerState::Succeeded);
-            query_results.closest_peers = closest_peers.peers_in_states(wanted_states, k_value).map(|p|p.peer.clone()).collect::<Vec<_>>();
+            let peers = closest_peers.peers_in_states(wanted_states, k_value).map(|p|p.peer.clone()).collect::<Vec<_>>();
+            if !peers.is_empty() {
+                query_results.closest_peers = Some(peers);
+            }
 
             f(Ok(query_results));
         });

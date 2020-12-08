@@ -73,7 +73,7 @@ pub struct Kademlia<TStore> {
     query_config: QueryConfig,
 
     /// The cache of Kademlia messenger.
-    messengers: Option<MessengerCache>,
+    messengers: Option<MessengerManager>,
 
     /// The currently connected peers.
     ///
@@ -576,13 +576,7 @@ impl<TStore> Kademlia<TStore>
         let mut q = self.prepare_iterative_query(QueryType::GetClosestPeers, key);
 
         q.run(|r| {
-            f(r.and_then(|r|{
-                if r.closest_peers.is_empty() {
-                    Err(KadError::NotFound)
-                } else {
-                    Ok(r.closest_peers)
-                }
-            }));
+            f(r.and_then(|r| r.closest_peers.ok_or(KadError::NotFound)));
         });
     }
 
@@ -597,13 +591,7 @@ impl<TStore> Kademlia<TStore>
         let mut q = self.prepare_iterative_query(QueryType::FindPeer, key);
 
         q.run(|r| {
-            f(r.and_then(|r|{
-                if let Some(peer)= r.found_peer {
-                    Ok(peer)
-                } else {
-                    Err(KadError::NotFound)
-                }
-            }));
+            f(r.and_then(|r| r.found_peer.ok_or(KadError::NotFound)));
         });
     }
 
@@ -625,13 +613,7 @@ impl<TStore> Kademlia<TStore>
             let mut q = self.prepare_iterative_query(QueryType::GetProviders { count: remaining, local: Some(provider_peers) }, key);
 
             q.run(|r|{
-                f(r.and_then(|r|{
-                    if r.providers.is_empty() {
-                        Err(KadError::NotFound)
-                    } else {
-                        Ok(r.providers)
-                    }
-                }));
+                f(r.and_then(|r| r.providers.ok_or(KadError::NotFound)));
             });
         }
 
@@ -663,13 +645,7 @@ impl<TStore> Kademlia<TStore>
             let needed = quorum - records.len();
             let mut q = self.prepare_iterative_query(QueryType::GetRecord { quorum_needed: needed, local: Some(records) }, key);
             q.run(|r|{
-                f(r.and_then(|r|{
-                    if r.records.is_empty() {
-                        Err(KadError::NotFound)
-                    } else {
-                        Ok(r.records)
-                    }
-                }));
+                f(r.and_then(|r| r.records.ok_or(KadError::NotFound)));
             });
         }
     }
@@ -707,14 +683,6 @@ impl<TStore> Kademlia<TStore>
         let messengers = self.messengers.clone().expect("must be Some");
         // initialte the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(record.key.clone(), move |peers| {
-            let peers = peers.and_then(|p| {
-                if p.is_empty() {
-                    Err(KadError::NotFound)
-                } else {
-                    Ok(p)
-                }
-            });
-
             if let Err(e) = peers {
                 f(Err(e));
             } else {
@@ -834,14 +802,6 @@ impl<TStore> Kademlia<TStore>
 
         // initialte the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(key, move |peers| {
-            let peers = peers.and_then(|p| {
-                if p.is_empty() {
-                    Err(KadError::NotFound)
-                } else {
-                    Ok(p)
-                }
-            });
-
             if let Err(e) = peers {
                 f(Err(e));
             } else {
@@ -1166,7 +1126,7 @@ impl<TStore> Kademlia<TStore>
 
     /// Start the main message loop of Kademlia.
     pub fn start(mut self, swarm: SwarmControl) {
-        self.messengers = Some(MessengerCache::new(swarm.clone(), self.protocol_config.clone()));
+        self.messengers = Some(MessengerManager::new(swarm.clone(), self.protocol_config.clone()));
         self.swarm = Some(swarm);
 
         // well, self 'move' explicitly,
@@ -1677,22 +1637,22 @@ pub enum RoutingUpdate {
 
 ///////////////////////////////////////////
 #[derive(Clone)]
-pub(crate) struct MessengerCache {
-    streams: Arc<Mutex<FnvHashMap<PeerId, KadMessenger>>>,
+pub(crate) struct MessengerManager {
     swarm: SwarmControl,
     config: KademliaProtocolConfig,
+    cache: Arc<Mutex<FnvHashMap<PeerId, KadMessenger>>>,
 }
 
-impl MessengerCache {
+impl MessengerManager {
     fn new(swarm: SwarmControl, config: KademliaProtocolConfig) -> Self {
-        Self { streams: Arc::new(Default::default()), swarm, config }
+        Self { swarm, config, cache: Arc::new(Default::default()) }
     }
 
     pub(crate) async fn get_messenger(&mut self, peer: &PeerId) -> Result<KadMessenger> {
         // lock as little as possible
         let r = {
-            let mut streams = self.streams.lock().await;
-            streams.remove(peer)
+            let mut cache = self.cache.lock().await;
+            cache.remove(peer)
         };
 
         match r {
@@ -1708,12 +1668,12 @@ impl MessengerCache {
 
     pub(crate) async fn put_messenger(&mut self, mut messenger: KadMessenger) {
         if messenger.reuse().await {
-            let mut streams = self.streams.lock().await;
+            let mut cache = self.cache.lock().await;
             let peer = messenger.get_peer_id();
 
             // perhaps there is a messenger in the hashmap already
-            if !streams.contains_key(peer) {
-                streams.insert(peer.clone(), messenger);
+            if !cache.contains_key(peer) {
+                cache.insert(peer.clone(), messenger);
             }
         }
     }
