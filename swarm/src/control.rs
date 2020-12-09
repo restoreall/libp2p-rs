@@ -25,7 +25,7 @@ use futures::{
     channel::{mpsc, oneshot},
     prelude::*,
 };
-use libp2prs_core::{PeerId, Multiaddr};
+use libp2prs_core::{PeerId, Multiaddr, PublicKey};
 use libp2prs_core::peerstore::{PeerStore, AddrBookRecord};
 
 use crate::connection::ConnectionId;
@@ -47,12 +47,15 @@ type Result<T> = std::result::Result<T, SwarmError>;
 pub enum SwarmControlCmd {
     /// Open a connection to the remote peer with address specified.
     Connect(PeerId, Vec<Multiaddr>, oneshot::Sender<Result<()>>),
-    /// Open a connection to the remote peer.
-    NewConnection(PeerId, oneshot::Sender<Result<()>>),
+    /// Open a connection to the remote peer. Parameter 'bool' means using DHT(if available) to
+    /// look for multiaddr of the remote peer.
+    NewConnection(PeerId, bool, oneshot::Sender<Result<()>>),
     /// Close any connection to the remote peer.
     CloseConnection(PeerId, oneshot::Sender<Result<()>>),
     /// Open a new stream specified with protocol Ids to the remote peer.
-    NewStream(PeerId, Vec<ProtocolId>, oneshot::Sender<Result<Substream>>),
+    /// Parameter 'bool' means using DHT(if available) to look for
+    /// multiaddr of the remote peer.
+    NewStream(PeerId, Vec<ProtocolId>, bool, oneshot::Sender<Result<Substream>>),
     /// Close a stream specified.
     CloseStream(ConnectionId, StreamId),
     /// Close the whole connection.
@@ -117,7 +120,14 @@ impl Control {
     /// otherwise initiate Kad-DHT for address querying, when DHT is enabled.
     pub async fn new_connection(&mut self, peer_id: PeerId) -> Result<()> {
         let (tx, rx) = oneshot::channel::<Result<()>>();
-        let _ = self.sender.send(SwarmControlCmd::NewConnection(peer_id, tx)).await;
+        let _ = self.sender.send(SwarmControlCmd::NewConnection(peer_id, true, tx)).await;
+        rx.await?
+    }
+
+    /// Make a new connection towards the remote peer, without using DHT.
+    pub async fn new_connection_no_dht(&mut self, peer_id: PeerId) -> Result<()> {
+        let (tx, rx) = oneshot::channel::<Result<()>>();
+        let _ = self.sender.send(SwarmControlCmd::NewConnection(peer_id, false, tx)).await;
         rx.await?
     }
 
@@ -129,7 +139,14 @@ impl Control {
     /// eventually established.
     pub async fn new_stream(&mut self, peer_id: PeerId, pids: Vec<ProtocolId>) -> Result<Substream> {
         let (tx, rx) = oneshot::channel();
-        self.sender.send(SwarmControlCmd::NewStream(peer_id, pids, tx)).await?;
+        self.sender.send(SwarmControlCmd::NewStream(peer_id, pids, true, tx)).await?;
+        rx.await?
+    }
+
+    /// Open a new outbound stream towards the remote peer, without using DHT.
+    pub async fn new_stream_no_dht(&mut self, peer_id: PeerId, pids: Vec<ProtocolId>) -> Result<Substream> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(SwarmControlCmd::NewStream(peer_id, pids, false, tx)).await?;
         rx.await?
     }
 
@@ -153,8 +170,62 @@ impl Control {
         Ok(())
     }
 
+    /// Insert a public key, indexed by peer_id.
+    pub fn add_key(&self, peer_id: &PeerId, key: PublicKey) {
+        self.peer_store.add_key(peer_id, key)
+    }
+    /// Delete public key by peer_id.
+    pub fn del_key(&self, peer_id: &PeerId) {
+        self.peer_store.del_key(peer_id);
+    }
+
+    /// Get public key by peer_id.
+    pub fn get_key(&self, peer_id: &PeerId) -> Option<PublicKey> {
+        self.peer_store.get_key(peer_id)
+    }
+
     /// Get multiaddr of a peer.
     pub fn get_addr(&self, peer_id: &PeerId) -> Option<SmallVec<[AddrBookRecord; 4]>> {
         self.peer_store.get_addr(peer_id)
     }
+
+    /// Add a address to address_book by peer_id, if exists, update rtt.
+    pub fn add_addr(&self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration) {
+        self.peer_store.add_addr(peer_id, addr, ttl)
+    }
+
+    /// Add many new addresses if they're not already in the Address Book.
+    pub fn add_addrs(&self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration) {
+        self.peer_store.add_addrs(peer_id, addrs, ttl)
+    }
+
+    /// Delete all multiaddr of a peer from address book.
+    pub fn clear_addrs(&mut self, peer_id: &PeerId) {
+        self.peer_store.clear_addrs(peer_id)
+    }
+
+    /// Update ttl if current_ttl equals old_ttl.
+    pub fn update_addr(&self, peer_id: &PeerId, old_ttl: Duration, new_ttl: Duration) {
+        self.peer_store.update_addr(peer_id, old_ttl, new_ttl)
+    }
+
+    /// Get smallvec by peer_id and remove expired address
+    pub fn remove_expired_addr(&self, peer_id: &PeerId) {
+        self.peer_store.remove_expired_addr(peer_id)
+    }
+
+    /// Insert supported protocol by peer_id
+    pub fn add_protocol(&self, peer_id: &PeerId, proto: Vec<String>) {
+        self.peer_store.add_protocol(peer_id, proto);
+    }
+
+    /// Remove support protocol by peer_id
+    pub fn remove_protocol(&self, peer_id: &PeerId) {
+        self.peer_store.remove_protocol(peer_id);
+    }
+
+    pub fn get_protocol(&self, peer_id: &PeerId) -> Option<Vec<String>> {
+        self.peer_store.get_protocol(peer_id)
+    }
+
 }

@@ -497,17 +497,17 @@ impl Swarm {
                 // got the peer_id and the addresses, start the dialer for it
                 let _ = self.on_connect(peer_id, addrs, reply);
             }
-            SwarmControlCmd::NewConnection(peer_id, reply) => {
+            SwarmControlCmd::NewConnection(peer_id, use_dht, reply) => {
                 // got the peer_id, start the dialer for it
-                let _ = self.on_new_connection(peer_id, reply);
+                let _ = self.on_new_connection(peer_id, use_dht, reply);
             }
             SwarmControlCmd::CloseConnection(peer_id, reply) => {
                 // got the peer_id, close all connections to the peer
                 let _ = self.on_close_connection(peer_id, reply);
             }
-            SwarmControlCmd::NewStream(peer_id, pids, reply) => {
+            SwarmControlCmd::NewStream(peer_id, pids, use_dht, reply) => {
                 // got the peer_id, try opening a new sub stream
-                let _ = self.on_new_stream(peer_id, pids, reply);
+                let _ = self.on_new_stream(peer_id, pids, use_dht, reply);
             }
             SwarmControlCmd::CloseStream(cid, sid) => {
                 // got the connection_id, try closing a new sub stream
@@ -551,13 +551,13 @@ impl Swarm {
         Ok(())
     }
 
-    fn on_new_connection(&mut self, peer_id: PeerId, reply: oneshot::Sender<Result<()>>) -> Result<()> {
+    fn on_new_connection(&mut self, peer_id: PeerId, use_dht: bool, reply: oneshot::Sender<Result<()>>) -> Result<()> {
         // return if we already have the connection, otherwise, start dialing
         if let Some(_conn) = self.get_best_conn(&peer_id) {
             let _ = reply.send(Ok(()));
         } else {
             // dialing peer, with the post-processing callback
-            self.dial_peer(peer_id, |r: Result<&mut Connection>| {
+            self.dial_peer(peer_id, use_dht, |r: Result<&mut Connection>| {
                 let _ = reply.send(r.map(|_| ()));
             });
         }
@@ -578,7 +578,7 @@ impl Swarm {
         Ok(())
     }
 
-    fn on_new_stream(&mut self, peer_id: PeerId, pids: Vec<ProtocolId>, reply: oneshot::Sender<Result<Substream>>) -> Result<()> {
+    fn on_new_stream(&mut self, peer_id: PeerId, pids: Vec<ProtocolId>, use_dht: bool, reply: oneshot::Sender<Result<Substream>>) -> Result<()> {
         if let Some(connection) = self.get_best_conn(&peer_id) {
             // well, we have a connection, start a task to open the stream
             connection.open_stream(pids, move |r| {
@@ -588,7 +588,7 @@ impl Swarm {
         } else {
             log::debug!("Dial and then create a new stream");
             // dialing peer, and opening a new stream in the post-processing callback
-            self.dial_peer(peer_id.clone(), |r: Result<&mut Connection>| match r {
+            self.dial_peer(peer_id.clone(), use_dht, |r: Result<&mut Connection>| match r {
                 Ok(connection) => {
                     connection.open_stream(pids, |r| {
                         let _ = reply.send(r.map_err(|e| e.into()));
@@ -761,7 +761,7 @@ impl Swarm {
             .dial(peer_id, self.transports.clone(), EitherDialAddr::Addresses(addrs.into()), self.event_sender.clone(), tid);
     }
 
-    fn dial_peer<F: FnOnce(Result<&mut Connection>) + Send + 'static>(&mut self, peer_id: PeerId, f: F) {
+    fn dial_peer<F: FnOnce(Result<&mut Connection>) + Send + 'static>(&mut self, peer_id: PeerId, use_dht: bool, f: F) {
         // if dialing to itself...
         if self.local_peer_id().eq(&peer_id) {
             f(Err(SwarmError::DialToSelf));
@@ -773,8 +773,8 @@ impl Swarm {
             Some(l) if !l.is_empty() => dial::EitherDialAddr::Addresses(l.into_iter().map(|r| r.into_maddr()).collect()),
             _ => {
                 // if DHT is NOT enabled, reply with NoAddresses
-                if true
-                /*self.dht*/
+                if !use_dht
+                /* || self.dht.is_some */
                 {
                     f(Err(SwarmError::NoAddresses(peer_id)));
                     return;

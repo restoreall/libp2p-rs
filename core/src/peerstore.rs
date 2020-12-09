@@ -103,10 +103,16 @@ impl PeerStore {
         guard.addrs.add_addr(peer_id, addr, ttl);
     }
 
-    /// Delete a peer from address book.
-    pub fn del_peer(&mut self, peer_id: &PeerId) {
+    /// Add many new addresses if they're not already in the Address Book.
+    pub fn add_addrs(&self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration) {
         let mut guard = self.inner.lock().unwrap();
-        guard.addrs.del_peer(peer_id);
+        guard.addrs.add_addrs(peer_id, addrs, ttl);
+    }
+
+    /// Delete all multiaddr of a peer from address book.
+    pub fn clear_addrs(&mut self, peer_id: &PeerId) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.addrs.clear_addrs(peer_id);
     }
 
     /// Retrieve the record from the address book.
@@ -272,7 +278,11 @@ impl AddrBook {
         }
     }
 
-    fn del_peer(&mut self, peer_id: &PeerId) {
+    fn add_addrs(&mut self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration) {
+        // TODO:
+    }
+
+    fn clear_addrs(&mut self, peer_id: &PeerId) {
         self.addr_book.remove(peer_id);
     }
 
@@ -474,7 +484,7 @@ mod tests {
         let zero = ab.get_addr(&peer_id).unwrap().first().unwrap().ttl - Duration::from_secs(3).as_secs_f64();
         assert_eq!(zero as i64, 0);
 
-        ab.del_peer(&peer_id);
+        ab.clear_addrs(&peer_id);
         assert!(ab.get_addr(&peer_id).is_none());
     }
 

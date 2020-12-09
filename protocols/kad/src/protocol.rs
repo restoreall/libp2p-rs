@@ -303,9 +303,8 @@ pub(crate) struct KadMessenger {
 
 impl KadMessenger {
     pub(crate) async fn build(mut swarm: SwarmControl, peer: PeerId, config: KademliaProtocolConfig) -> Result<Self, KadError> {
-        // TODO: addresses??
-        swarm.connect(peer.clone(), vec!()).await?;
-        let stream = swarm.new_stream(peer.clone(), vec!(config.protocol_name())).await?;
+        // open a new stream, don't use DHT, as we are parts of DHT
+        let stream = swarm.new_stream_no_dht(peer.clone(), vec!(config.protocol_name())).await?;
         Ok(Self {
             stream,
             config,
