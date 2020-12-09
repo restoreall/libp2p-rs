@@ -36,13 +36,12 @@ use futures::lock::Mutex;
 use async_std::task;
 
 use libp2prs_core::{PeerId, Multiaddr};
-use libp2prs_swarm::substream::Substream;
 use libp2prs_swarm::Control as SwarmControl;
 
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger};
 use crate::control::{Control, ControlCommand};
 
-use crate::query::{QueryPool, QueryConfig, QueryStats, IterativeQuery, QueryType, PeerRecord};
+use crate::query::{QueryConfig, QueryStats, IterativeQuery, QueryType, PeerRecord};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
@@ -60,9 +59,6 @@ pub struct Kademlia<TStore> {
 
     /// The k-bucket insertion strategy.
     kbucket_inserts: KademliaBucketInserts,
-
-    /// The currently active (i.e. in-progress) queries.
-    queries: QueryPool<QueryInner>,
 
     /// Configuration of the wire protocol.
     protocol_config: KademliaProtocolConfig,
@@ -399,8 +395,6 @@ impl<TStore> Kademlia<TStore>
             control_rx,
             kbuckets: KBucketsTable::new(local_key, config.kbucket_pending_timeout),
             kbucket_inserts: config.kbucket_inserts,
-            //queued_events: VecDeque::with_capacity(config.query_config.replication_factor.get()),
-            queries: QueryPool::new(config.query_config.clone()),
             protocol_config: config.protocol_config,
             query_config: config.query_config,
             messengers: None,
@@ -573,7 +567,7 @@ impl<TStore> Kademlia<TStore>
     // prepare and generate a IterativeQuery for iterative query.
     fn prepare_iterative_query(&mut self, qt: QueryType, key: record::Key) -> IterativeQuery
     {
-        let local_id = self.kbuckets.local_key().preimage().clone();
+        let local_id = self.kbuckets.self_key().preimage().clone();
         let target = kbucket::Key::new(key.clone());
         let seeds = self.kbuckets.closest_keys(&target).into_iter().collect();
 
@@ -695,7 +689,7 @@ impl<TStore> Kademlia<TStore>
             expires: None,
         };
 
-        record.publisher = Some(self.kbuckets.local_key().preimage().clone());
+        record.publisher = Some(self.kbuckets.self_key().preimage().clone());
         if let Err(e) = self.store.put(record.clone()) {
             f(Err(e));
             return;
@@ -746,7 +740,7 @@ impl<TStore> Kademlia<TStore>
     /// record to eventually expire throughout the DHT.
     fn remove_record(&mut self, key: &record::Key) {
         if let Some(r) = self.store.get(key) {
-            if r.publisher.as_ref() == Some(self.kbuckets.local_key().preimage()) {
+            if r.publisher.as_ref() == Some(self.kbuckets.self_key().preimage()) {
                 self.store.remove(key)
             }
         }
@@ -772,7 +766,7 @@ impl<TStore> Kademlia<TStore>
     /// > **Note**: Bootstrapping requires at least one node of the DHT to be known.
     /// > See [`Kademlia::add_address`].
     fn bootstrap(&mut self) {
-        let local_key = self.kbuckets.local_key().clone();
+        let local_key = self.kbuckets.self_key().clone();
         let key = local_key.into_preimage().into_bytes();
 
         self.get_closest_peers(key.into(), |_| {});
@@ -807,7 +801,7 @@ impl<TStore> Kademlia<TStore>
         let local_addrs = Vec::new();
         let record = ProviderRecord::new(
             key.clone(),
-            self.kbuckets.local_key().preimage().clone(),
+            self.kbuckets.self_key().preimage().clone(),
             local_addrs);
         if let Err(e) = self.store.add_provider(record.clone()) {
             f(Err(e));
@@ -865,15 +859,15 @@ impl<TStore> Kademlia<TStore>
     ///
     /// This is a local operation. The local node will still be considered as a
     /// provider for the key by other nodes until these provider records expire.
-    pub fn stop_providing(&mut self, key: &record::Key) {
-        self.store.remove_provider(key, self.kbuckets.local_key().preimage());
+    fn stop_providing(&mut self, key: &record::Key) {
+        self.store.remove_provider(key, self.kbuckets.self_key().preimage());
     }
 
     /// Finds the closest peers to a `target` in the context of a request by
     /// the `source` peer, such that the `source` peer is never included in the
     /// result.
     fn find_closest<T: Clone>(&mut self, target: &kbucket::Key<T>, source: &PeerId) -> Vec<KadPeer> {
-        if target == self.kbuckets.local_key() {
+        if target == self.kbuckets.self_key() {
             Vec::new()
         } else {
             self.kbuckets
@@ -909,7 +903,7 @@ impl<TStore> Kademlia<TStore>
                         // try to find addresses in the routing table, as was
                         // done before provider records were stored along with
                         // their addresses.
-                        if &node_id == kbuckets.local_key().preimage() {
+                        if &node_id == kbuckets.self_key().preimage() {
                             Some(local_addrs.iter().cloned().collect::<Vec<_>>())
                         } else {
                             let key = kbucket::Key::new(node_id.clone());
@@ -931,7 +925,7 @@ impl<TStore> Kademlia<TStore>
             .take(self.query_config.replication_factor.get())
             .collect()
     }
-
+/*
     /// Starts an iterative `ADD_PROVIDER` query for the given key.
     fn start_add_provider(&mut self, key: record::Key, context: AddProviderContext) {
         let info = QueryInfo::AddProvider {
@@ -959,7 +953,7 @@ impl<TStore> Kademlia<TStore>
         let inner = QueryInner::new(info);
         self.queries.add_iter_closest(target.clone(), peers, inner);
     }
-
+*/
     /// Updates the routing table with a new connection status and address of a peer.
     fn connection_updated(&mut self, peer: PeerId, address: Option<Multiaddr>, new_status: NodeStatus) {
         let key = kbucket::Key::new(peer.clone());
@@ -1045,12 +1039,12 @@ impl<TStore> Kademlia<TStore>
     }
 
     /// Processes a record received from a peer.
-    fn record_received(
+    fn handle_put_record(
         &mut self,
         _source: PeerId,
         mut record: Record
     ) -> Result<KadResponseMsg> {
-        if record.publisher.as_ref() == Some(self.kbuckets.local_key().preimage()) {
+        if record.publisher.as_ref() == Some(self.kbuckets.self_key().preimage()) {
             // If the (alleged) publisher is the local node, do nothing. The record of
             // the original publisher should never change as a result of replication
             // and the publisher is always assumed to have the "right" value.
@@ -1117,8 +1111,8 @@ impl<TStore> Kademlia<TStore>
     }
 
     /// Processes a provider record received from a peer.
-    fn provider_received(&mut self, key: record::Key, provider: KadPeer) {
-        if &provider.node_id != self.kbuckets.local_key().preimage() {
+    fn handle_add_provider(&mut self, key: record::Key, provider: KadPeer) {
+        if &provider.node_id != self.kbuckets.self_key().preimage() {
             let record = ProviderRecord {
                 key,
                 provider: provider.node_id,
@@ -1145,6 +1139,8 @@ impl<TStore> Kademlia<TStore>
         self.messengers = Some(MessengerManager::new(swarm.clone(), self.protocol_config.clone()));
         self.swarm = Some(swarm);
 
+        self.bootstrap();
+
         // well, self 'move' explicitly,
         let mut kad = self;
         task::spawn(async move {
@@ -1154,7 +1150,7 @@ impl<TStore> Kademlia<TStore>
 
 
     /// Message Process Loop.
-    pub async fn process_loop(&mut self) -> Result<()> {
+    async fn process_loop(&mut self) -> Result<()> {
         let result = self.next().await;
         //
         // if !self.peer_rx.is_terminated() {
@@ -1221,28 +1217,6 @@ impl<TStore> Kademlia<TStore>
         }
     }
 
-    // Always wait to send message.
-    async fn handle_sending_message(&mut self, rpid: PeerId, writer: Substream) {
-        // let (mut tx, mut rx) = mpsc::unbounded();
-        //
-        // let _ = tx.send(self.get_hello_packet()).await;
-        //
-        // self.peers.insert(rpid.clone(), tx);
-        //
-        // task::spawn(async move {
-        //     loop {
-        //         match rx.next().await {
-        //             Some(rpc) => {
-        //                 log::trace!("send rpc msg: {:?}", rpc);
-        //                 // if failed, should reset?
-        //                 let _ = writer.write_one(rpc.into_bytes().as_slice()).await;
-        //             }
-        //             None => return,
-        //         }
-        //     }
-        // });
-    }
-
     // Called when new peer is connected.
     async fn handle_peer_connected(&mut self, peer_id: PeerId) {
         // the peer id might have existed in the hashset, don't care too much
@@ -1265,19 +1239,6 @@ impl<TStore> Kademlia<TStore>
     // handle a Kad peer is dead.
     async fn handle_peer_stopped(&mut self, peer_id: PeerId) {
         // TODO
-    }
-
-    // Check if stream / connection is closed.
-    async fn handle_peer_eof(&mut self, rpid: PeerId, reader: Substream) {
-        // let mut peer_dead_tx = self.peer_tx.clone();
-        // task::spawn(async move {
-        //     loop {
-        //         if reader.read_one(2048).await.is_err() {
-        //             let _ = peer_dead_tx.send(PeerEvent::DeadPeer(rpid.clone())).await;
-        //             return;
-        //         }
-        //     }
-        // });
     }
 
     // Handle Kad events sent from protocol handler.
@@ -1336,7 +1297,7 @@ impl<TStore> Kademlia<TStore>
                     log::info!("received provider from wrong peer {:?}", source);
                     Err(KadError::InvalidSource(source))
                 } else {
-                    self.provider_received(key, provider);
+                    self.handle_add_provider(key, provider);
                     // AddProvider doesn't require a response
                     Ok(None)
                 }
@@ -1371,7 +1332,7 @@ impl<TStore> Kademlia<TStore>
                 }))
             }
             KadRequestMsg::PutValue { record } => {
-                self.record_received(source, record).and_then(|r|Ok(Some(r)))
+                self.handle_put_record(source, record).and_then(|r|Ok(Some(r)))
             }
         };
 

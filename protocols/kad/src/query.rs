@@ -28,56 +28,13 @@ use async_std::task;
 use libp2prs_core::PeerId;
 
 use crate::{ALPHA_VALUE, K_VALUE, BETA_VALUE, KadError, record};
-use crate::kbucket::{Key, KeyBytes, Distance};
+use crate::kbucket::{Key, Distance};
 
 use crate::protocol::{ProtocolEvent, KadPeer, KadConnectionType};
 use crate::kad::{MessengerManager, KadPoster};
 
 type Result<T> = std::result::Result<T, KadError>;
 
-/// A `QueryPool` provides an aggregate state machine for driving `Query`s to completion.
-///
-/// Internally, a `Query` is in turn driven by an underlying `QueryPeerIter`
-/// that determines the peer selection strategy, i.e. the order in which the
-/// peers involved in the query should be contacted.
-pub struct QueryPool<TInner> {
-    next_id: usize,
-    config: QueryConfig,
-    p: Vec<TInner>
-}
-
-
-impl<TInner> QueryPool<TInner> {
-    /// Creates a new `QueryPool` with the given configuration.
-    pub fn new(config: QueryConfig) -> Self {
-        QueryPool {
-            next_id: 0,
-            config,
-            p: vec!()
-        }
-    }
-
-    /// Adds a query to the pool that iterates towards the closest peers to the target.
-    pub fn add_iter_closest<T, I>(&mut self, _target: T, _peers: I, _inner: TInner) -> QueryId
-    where
-        T: Into<KeyBytes> + Clone,
-        I: IntoIterator<Item = Key<PeerId>>
-    {
-        let id = self.next_query_id();
-        id
-    }
-
-    fn next_query_id(&mut self) -> QueryId {
-        let id = QueryId(self.next_id);
-        self.next_id = self.next_id.wrapping_add(1);
-        id
-    }
-
-}
-
-/// Unique identifier for an active query.
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-pub struct QueryId(usize);
 
 /// The configuration for queries in a `QueryPool`.
 #[derive(Debug, Clone)]
@@ -337,8 +294,6 @@ impl ClosestPeers
 /// Information about a running query.
 #[derive(Debug, Clone)]
 pub enum QueryType {
-    /// A query initiated by [`Kademlia::bootstrap`].
-    Bootstrap,
     /// A query initiated by [`Kademlia::find_peer`].
     FindPeer,
     /// A query initiated by [`Kademlia::get_closest_peers`].
@@ -454,8 +409,6 @@ impl<'a> IterativeQuery<'a>
 
                         // handle different query type, check if we are done querying
                         match qt {
-                            QueryType::Bootstrap => {
-                            }
                             QueryType::GetClosestPeers => {
                             }
                             QueryType::FindPeer => {
@@ -501,6 +454,12 @@ impl<'a> IterativeQuery<'a>
                                     // check if we have enough records
                                     if query_results.records.as_ref().map_or(0, |r|r.len()) > quorum_needed {
                                         log::info!("GetRecord: got enough records for key={:?}", key);
+
+                                        // TODO: put a cache to the closest peer which didn't have the record
+                                        //let peer = closest_peers.first_alive_peer(predict)
+                                        //if let Ok(mut ms) = messengers.get_messenger(&peer).await {
+                                        //    if ms.send_put_value(record).await.is_ok() {
+
                                         break;
                                     }
                                 }

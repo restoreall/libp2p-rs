@@ -161,7 +161,7 @@ where
     }
 
     /// Returns the local key.
-    pub fn local_key(&self) -> &TKey {
+    pub fn self_key(&self) -> &TKey {
         &self.local_key
     }
 
