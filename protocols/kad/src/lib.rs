@@ -24,7 +24,6 @@
 //       be useful later for record store
 #![allow(dead_code)]
 
-//pub mod handler;
 pub mod kbucket;
 pub mod protocol;
 pub mod record;

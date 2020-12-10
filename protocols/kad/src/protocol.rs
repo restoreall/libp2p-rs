@@ -841,6 +841,9 @@ pub enum ProtocolEvent {
     // TODO: ConnectedPoint
     ProtocolConfirmed { endpoint: u32/*ConnectedPoint*/ },
 
+    /// Timer event for Provider cleanup.
+    ProviderCleanupTimer,
+
     /// Kad request message from remote peer.
     ///
     KadRequest {

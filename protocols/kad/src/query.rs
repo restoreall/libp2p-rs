@@ -107,9 +107,6 @@ impl QueryJob
                 let duration = startup.elapsed();
                 let _ = me.tx.send(QueryUpdate::Queried { source: peer, closer, provider: None, record, duration }).await;
             }
-            _ => {
-                panic!("shouldn't happen");
-            }
         }
 
         // try to put messenger into cache

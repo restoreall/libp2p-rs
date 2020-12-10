@@ -47,6 +47,7 @@ use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
 use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
 use crate::task_limit::TaskLimiter;
+use async_std::task::JoinHandle;
 
 
 type Result<T> = std::result::Result<T, KadError>;
@@ -74,6 +75,9 @@ pub struct Kademlia<TStore> {
     /// This is a superset of the connected peers currently in the routing table.
     connected_peers: FnvHashSet<PeerId>,
 
+    /// The timer task handle of Provider cleanup job.
+    provider_timer_handle: Option<JoinHandle<()>>,
+
     /// Periodic job for re-publication of provider records for keys
     /// provided by the local node.
     add_provider_job: Option<AddProviderJob>,
@@ -81,6 +85,9 @@ pub struct Kademlia<TStore> {
     /// Periodic job for (re-)replication and (re-)publishing of
     /// regular (value-)records.
     put_record_job: Option<PutRecordJob>,
+
+    /// The interval to cleanup expired provider records.
+    cleanup_interval: Duration,
 
     /// The TTL of regular (value-)records.
     record_ttl: Option<Duration>,
@@ -151,6 +158,7 @@ pub struct KademliaConfig {
     kbucket_pending_timeout: Duration,
     query_config: QueryConfig,
     protocol_config: KademliaProtocolConfig,
+    cleanup_interval: Duration,
     record_ttl: Option<Duration>,
     record_replication_interval: Option<Duration>,
     record_publication_interval: Option<Duration>,
@@ -166,6 +174,7 @@ impl Default for KademliaConfig {
             kbucket_pending_timeout: Duration::from_secs(60),
             query_config: QueryConfig::default(),
             protocol_config: Default::default(),
+            cleanup_interval: Duration::from_secs(24 * 60 * 60),
             record_ttl: Some(Duration::from_secs(36 * 60 * 60)),
             record_replication_interval: Some(Duration::from_secs(60 * 60)),
             record_publication_interval: Some(Duration::from_secs(24 * 60 * 60)),
@@ -235,6 +244,16 @@ impl KademliaConfig {
     /// as well as its security improvements.
     pub fn disjoint_query_paths(&mut self, enabled: bool) -> &mut Self {
         self.query_config.disjoint_query_paths = enabled;
+        self
+    }
+
+    /// Sets the interval for Provider cleanup.
+    ///
+    /// The provider records will be cleaned up per the interval.The default is 1
+    /// hour.
+    ///
+    pub fn set_cleanup_interval(&mut self, interval: Duration) -> &mut Self {
+        self.cleanup_interval = interval;
         self
     }
 
@@ -399,8 +418,10 @@ impl<TStore> Kademlia<TStore>
             query_config: config.query_config,
             messengers: None,
             connected_peers: Default::default(),
+            provider_timer_handle: None,
             add_provider_job,
             put_record_job,
+            cleanup_interval: config.cleanup_interval,
             record_ttl: config.record_ttl,
             provider_record_ttl: config.provider_record_ttl,
             connection_idle_timeout: config.connection_idle_timeout,
@@ -408,6 +429,7 @@ impl<TStore> Kademlia<TStore>
         }
     }
 
+    // Returns a copied instance of Kad poster.
     fn get_poster(&self) -> KadPoster {
         KadPoster::new(self.event_tx.clone())
     }
@@ -1141,6 +1163,19 @@ impl<TStore> Kademlia<TStore>
 
         self.bootstrap();
 
+        // start timer task, which would generate ProtocolEvent::Timer to kad main loop
+        log::info!("starting provider timer task...");
+        let interval = self.cleanup_interval;
+        let mut poster = self.get_poster();
+        let h = task::spawn(async move {
+            loop {
+                task::sleep(interval).await;
+                let _= poster.post(ProtocolEvent::ProviderCleanupTimer).await;
+            }
+        });
+
+        self.provider_timer_handle = Some(h);
+
         // well, self 'move' explicitly,
         let mut kad = self;
         task::spawn(async move {
@@ -1268,9 +1303,10 @@ impl<TStore> Kademlia<TStore>
                 self.handle_kad_request(request, source, reply);
                 Ok(())
             }
-            // Some(ProtocolEvent::FindNodeReq { key, request_id }) => {
-            //     Ok(())
-            // }
+            Some(ProtocolEvent::ProviderCleanupTimer) => {
+                self.handle_provider_cleanup();
+                Ok(())
+            }
             Some(_) => {
                 Ok(())
             }
@@ -1337,6 +1373,21 @@ impl<TStore> Kademlia<TStore>
         };
 
         let _ = reply.send(response);
+    }
+
+    fn handle_provider_cleanup(&mut self) {
+        // try to cleanup provider records
+        let now = Instant::now();
+        log::info!("handle_provider_cleanup, invoked at {:?}", now);
+
+        let provider_records = self.store.provided()
+            .filter(|r| r.is_expired(now))
+            .map(|r| r.into_owned())
+            .collect::<Vec<_>>();
+
+        provider_records.into_iter().for_each(|r|{
+            self.store.remove_provider(&r.key, &r.provider);
+        });
     }
 
     // Process publish or subscribe command.
