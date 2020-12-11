@@ -146,6 +146,11 @@ impl Into<proto::message::Peer> for KadPeer {
     }
 }
 
+impl Into<PeerId> for KadPeer {
+    fn into(self) -> PeerId {
+        self.node_id
+    }
+}
 
 type ProtocolId = &'static [u8];
 

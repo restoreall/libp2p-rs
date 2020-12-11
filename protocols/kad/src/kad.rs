@@ -21,7 +21,6 @@
 use std::time::{Duration, Instant};
 use std::num::NonZeroUsize;
 use std::borrow::Borrow;
-use smallvec::SmallVec;
 use std::sync::{Arc};
 use fnv::{FnvHashSet, FnvHashMap};
 
@@ -41,12 +40,11 @@ use libp2prs_swarm::Control as SwarmControl;
 use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger};
 use crate::control::{Control, ControlCommand};
 
-use crate::query::{QueryConfig, QueryStats, IterativeQuery, QueryType, PeerRecord};
+use crate::query::{QueryConfig, IterativeQuery, QueryType, PeerRecord, FixedQuery};
 use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
 use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
-use crate::task_limit::TaskLimiter;
 use async_std::task::JoinHandle;
 
 
@@ -675,10 +673,23 @@ impl<TStore> Kademlia<TStore>
             // ok, we have enough, simply return
             f(Ok(records));
         } else {
+            let config = self.query_config.clone();
+            let messengers = self.messengers.clone().expect("must be Some");
+
             let needed = quorum - records.len();
             let mut q = self.prepare_iterative_query(QueryType::GetRecord { quorum_needed: needed, local: Some(records) }, key);
             q.run(|r|{
-                f(r.and_then(|r| r.records.ok_or(KadError::NotFound)));
+                f(r.and_then(|r| {
+                    let record = r.records.as_ref().map(|r|r.first().cloned());
+                    if let Some(Some(record)) = record {
+                        if let Some(cache_peers) = r.cache_peers {
+                            let record = record.record;
+                            let fixed_query = FixedQuery::new(QueryType::PutRecord {record}, messengers, config, cache_peers);
+                            fixed_query.run(|_| {});
+                        }
+                    }
+                    r.records.ok_or(KadError::NotFound)
+                }));
             });
         }
     }
@@ -718,35 +729,17 @@ impl<TStore> Kademlia<TStore>
         }
         record.expires = record.expires.or_else(||
             self.record_ttl.map(|ttl| Instant::now() + ttl));
-        //let quorum = self.queries.config().replication_factor.get();
-        let alpha_value = self.query_config.parallelism;
+
+        let config = self.query_config.clone();
         let messengers = self.messengers.clone().expect("must be Some");
-        // initialte the iterative lookup for closest peers, which can be used to publish the record
+        // initiate the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(record.key.clone(), move |peers| {
             if let Err(e) = peers {
                 f(Err(e));
             } else {
-                let mut limiter = TaskLimiter::new(alpha_value);
-                task::spawn(async move {
-                    for peer in peers.unwrap() {
-                        let record = record.clone();
-                        let mut messengers = messengers.clone();
-
-                        // TODO: quorum of PutValue???
-                        limiter.run(async move {
-                            if let Ok(mut ms) = messengers.get_messenger(&peer.node_id).await {
-                                if ms.send_put_value(record).await.is_ok() {
-                                    messengers.put_messenger(ms).await;
-                                }
-                                // otherwise, ms will be dropped here, a task will be spawned to close
-                                // the inner substream...
-                            }
-                        }).await;
-                    }
-                    let c = limiter.wait().await;
-                    log::info!("record announced to total {} peers", c);
-                    f(Ok(()))
-                });
+                let peers = peers.unwrap().into_iter().map(KadPeer::into).collect::<Vec<_>>();
+                let fixed_query = FixedQuery::new(QueryType::PutRecord {record}, messengers, config, peers);
+                fixed_query.run(f);
             }
         });
     }
@@ -821,43 +814,25 @@ impl<TStore> Kademlia<TStore>
         // to avoid redundant storage and outdated addresses. Instead these are
         // acquired on demand when returning a `ProviderRecord` for the local node.
         let local_addrs = Vec::new();
-        let record = ProviderRecord::new(
+        let provider = ProviderRecord::new(
             key.clone(),
             self.kbuckets.self_key().preimage().clone(),
             local_addrs);
-        if let Err(e) = self.store.add_provider(record.clone()) {
+        if let Err(e) = self.store.add_provider(provider.clone()) {
             f(Err(e));
             return;
         }
-        let alpha_value = self.query_config.parallelism;
+        let config = self.query_config.clone();
         let messengers = self.messengers.clone().expect("must be Some");
 
-        // initialte the iterative lookup for closest peers, which can be used to publish the record
+        // initiate the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(key, move |peers| {
             if let Err(e) = peers {
                 f(Err(e));
             } else {
-                let mut limiter = TaskLimiter::new(alpha_value);
-                task::spawn(async move {
-                    for peer in peers.unwrap() {
-                        let record = record.clone();
-                        let mut messengers = messengers.clone();
-
-                        // TODO: quorum of AddProvider???
-                        limiter.run(async move {
-                            if let Ok(mut ms) = messengers.get_messenger(&peer.node_id).await {
-                                if ms.send_add_provider(record).await.is_ok() {
-                                    messengers.put_messenger(ms).await;
-                                }
-                                // otherwise, ms will be dropped here, a task will be spawned to close
-                                // the inner substream...
-                            }
-                        }).await;
-                    }
-                    let c = limiter.wait().await;
-                    log::info!("provider announced to total {} peers", c);
-                    f(Ok(()))
-                });
+                let peers = peers.unwrap().into_iter().map(KadPeer::into).collect::<Vec<_>>();
+                let fixed_query = FixedQuery::new(QueryType::AddProvider {provider}, messengers, config, peers);
+                fixed_query.run(f);
             }
         });
         // let target = kbucket::Key::new(key.clone());
