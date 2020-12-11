@@ -593,7 +593,7 @@ impl<TStore> Kademlia<TStore>
 
         let query = IterativeQuery::new(qt, key,
                                         self.messengers.clone().expect("must be Some"),
-                                        local_id, &self.query_config,
+                                        local_id, self.query_config.clone(),
                                         seeds, self.get_poster());
 
         query
@@ -604,7 +604,7 @@ impl<TStore> Kademlia<TStore>
         where
             F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static
     {
-        let mut q = self.prepare_iterative_query(QueryType::GetClosestPeers, key);
+        let q = self.prepare_iterative_query(QueryType::GetClosestPeers, key);
 
         q.run(|r| {
             f(r.and_then(|r| r.closest_peers.ok_or(KadError::NotFound)));
@@ -619,7 +619,7 @@ impl<TStore> Kademlia<TStore>
         where
             F: FnOnce(Result<KadPeer>) + Send + 'static
     {
-        let mut q = self.prepare_iterative_query(QueryType::FindPeer, key);
+        let q = self.prepare_iterative_query(QueryType::FindPeer, key);
 
         q.run(|r| {
             f(r.and_then(|r| r.found_peer.ok_or(KadError::NotFound)));
@@ -641,7 +641,7 @@ impl<TStore> Kademlia<TStore>
             f(Ok(provider_peers));
         } else {
             let remaining = count - provider_peers.len();
-            let mut q = self.prepare_iterative_query(QueryType::GetProviders { count: remaining, local: Some(provider_peers) }, key);
+            let q = self.prepare_iterative_query(QueryType::GetProviders { count: remaining, local: Some(provider_peers) }, key);
 
             q.run(|r|{
                 f(r.and_then(|r| r.providers.ok_or(KadError::NotFound)));
@@ -677,7 +677,7 @@ impl<TStore> Kademlia<TStore>
             let messengers = self.messengers.clone().expect("must be Some");
 
             let needed = quorum - records.len();
-            let mut q = self.prepare_iterative_query(QueryType::GetRecord { quorum_needed: needed, local: Some(records) }, key);
+            let q = self.prepare_iterative_query(QueryType::GetRecord { quorum_needed: needed, local: Some(records) }, key);
             q.run(|r|{
                 f(r.and_then(|r| {
                     let record = r.records.as_ref().map(|r|r.first().cloned());

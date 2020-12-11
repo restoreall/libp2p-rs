@@ -390,7 +390,7 @@ pub enum QueryType {
 /// 1. No more peer to lookup - starvation
 /// 2. No closer peer found event after 'beta' round queries.
 /// 3. Got the node/provider/value for the respective operation
-pub(crate) struct IterativeQuery<'a> {
+pub(crate) struct IterativeQuery {
     /// The target to be queried.
     key: record::Key,
     /// The Messenger is used to send/receive Kad messages.
@@ -400,17 +400,17 @@ pub(crate) struct IterativeQuery<'a> {
     /// The local peer Id of myself.
     local_id: PeerId,
     /// The kad configurations for queries.
-    config: &'a QueryConfig,
+    config: QueryConfig,
     /// The seed peers used to start the query.
     seeds: Vec<Key<PeerId>>,
     /// The KadPoster used to post ProtocolEvent to Kad main loop.
     poster: KadPoster
 }
 
-impl<'a> IterativeQuery<'a>
+impl IterativeQuery
 {
     pub(crate) fn new(query_type: QueryType, key: record::Key, messenger: MessengerManager,
-                      local_id: PeerId, config: &'a QueryConfig, seeds: Vec<Key<PeerId>>,
+                      local_id: PeerId, config: QueryConfig, seeds: Vec<Key<PeerId>>,
                       poster: KadPoster) -> Self {
         Self {
             query_type,
@@ -423,7 +423,7 @@ impl<'a> IterativeQuery<'a>
         }
     }
 
-    pub(crate) fn run<F>(&mut self, f: F)
+    pub(crate) fn run<F>(self, f: F)
         where
             F: FnOnce(Result<QueryResult>) + Send + 'static,
     {
@@ -434,9 +434,14 @@ impl<'a> IterativeQuery<'a>
             return;
         }
 
+        let mut me = self;
+        let alpha_value = me.config.parallelism.get();
+        let beta_value = me.config.beta_value.get();
+        let k_value = me.config.replication_factor.get();
+
         // closest_peers is used to retrieve the closer peers. It is a sorted btree-map, which is
         // indexed by Distance of the peer. The queried 'key' is used to calculate the distance.
-        let mut closest_peers = ClosestPeers::new(self.key.clone());
+        let mut closest_peers = ClosestPeers::new(me.key.clone());
         // prepare the query result
         let mut query_results = QueryResult {
             closest_peers: None,
@@ -448,7 +453,7 @@ impl<'a> IterativeQuery<'a>
 
         // extract local PeerRecord or Providers from QueryType
         // local items are parts of the final result
-        match &mut self.query_type {
+        match &mut me.query_type {
             QueryType::GetProviders { count:_, local } => {
                 query_results.providers = local.take();
             }
@@ -458,29 +463,19 @@ impl<'a> IterativeQuery<'a>
             _ => {}
         }
 
-        let qt = self.query_type.clone();
-        let key = self.key.clone();
-        let messenger = self.messengers.clone();
-        let local_id = self.local_id.clone();
-        let seeds = self.seeds.clone();
-        let alpha_value = self.config.parallelism.get();
-        let beta_value = self.config.beta_value.get();
-        let k_value = self.config.replication_factor.get();
-        let mut poster = self.poster.clone();
-
         // the channel used to deliver the result of each jobs
         let (mut tx, mut rx) = mpsc::channel(alpha_value);
 
         // start a task for query
         task::spawn(async move {
-            let seeds = seeds.into_iter().map(|k| KadPeer {
-                node_id: k.into_preimage(),
+            let seeds = me.seeds.iter().map(|k| KadPeer {
+                node_id: k.clone().into_preimage(),
                 multiaddrs: vec![],
                 connection_ty: KadConnectionType::CanConnect
             }).collect();
 
             // deliver the seeds to kick off the initial query
-            let _ = tx.send(QueryUpdate::Queried { source: local_id.clone(), closer: seeds, provider: None, record: None, duration: Duration::from_secs(0) }).await;
+            let _ = tx.send(QueryUpdate::Queried { source: me.local_id.clone(), closer: seeds, provider: None, record: None, duration: Duration::from_secs(0) }).await;
 
             // starting iterative querying for all selected peers...
             loop {
@@ -494,15 +489,15 @@ impl<'a> IterativeQuery<'a>
                         // incorporate 'closer' into 'clostest_peers', marked as PeerState::NotContacted
                         log::info!("successful query from {:}, closer {:?}, {:?}", source, closer, duration);
                         // note we don't add myself
-                        closer.retain(|p| p.node_id != local_id);
+                        closer.retain(|p| p.node_id != me.local_id.clone());
                         closest_peers.add_peers(closer);
                         closest_peers.set_peer_state(&source, PeerState::Succeeded);
 
                         // TODO: signal the k-buckets for new peer found
-                        let _ = poster.post(ProtocolEvent::KadPeerFound(source.clone(), true)).await;
+                        let _ = me.poster.post(ProtocolEvent::KadPeerFound(source.clone(), true)).await;
 
                         // handle different query type, check if we are done querying
-                        match qt {
+                        match me.query_type {
                             QueryType::GetClosestPeers => {
                             }
                             QueryType::FindPeer => {
@@ -515,7 +510,7 @@ impl<'a> IterativeQuery<'a>
                             QueryType::GetProviders { count, .. } => {
                                 // update providers
                                 if let Some(provider) = provider {
-                                    log::trace!("GetProviders: provider found {:?} key={:?}", provider, key);
+                                    log::trace!("GetProviders: provider found {:?} key={:?}", provider, me.key);
 
                                     if !provider.is_empty() {
                                         // append or create the query_results.providers
@@ -527,7 +522,7 @@ impl<'a> IterativeQuery<'a>
                                         }
                                         // check if we have enough providers
                                         if query_results.providers.as_ref().map_or(0, |p|p.len()) >= count {
-                                            log::info!("GetProviders: got enough provider for {:?}, limit={}", key, count);
+                                            log::info!("GetProviders: got enough provider for {:?}, limit={}", me.key, count);
                                             break;
                                         }
                                     }
@@ -535,7 +530,7 @@ impl<'a> IterativeQuery<'a>
                             }
                             QueryType::GetRecord { quorum_needed, .. } => {
                                 if let Some(record) = record {
-                                    log::trace!("GetRecord: record found {:?} key={:?}", record, key);
+                                    log::trace!("GetRecord: record found {:?} key={:?}", record, me.key);
 
                                     let pr = PeerRecord { peer: Some(source), record };
                                     if let Some(mut old) = query_results.records.take() {
@@ -547,7 +542,7 @@ impl<'a> IterativeQuery<'a>
 
                                     // check if we have enough records
                                     if query_results.records.as_ref().map_or(0, |r|r.len()) > quorum_needed {
-                                        log::info!("GetRecord: got enough records for key={:?}", key);
+                                        log::info!("GetRecord: got enough records for key={:?}", me.key);
 
                                         let peers_have_value = query_results.records.as_ref().expect("must be Some")
                                             .iter()
@@ -575,7 +570,7 @@ impl<'a> IterativeQuery<'a>
                         log::info!("unreachable peer {:?} detected", peer);
                         closest_peers.set_peer_state(&peer, PeerState::Unreachable);
                         // TODO: signal for dead peer detected
-                        let _ = poster.post(ProtocolEvent::KadPeerStopped(peer)).await;
+                        let _ = me.poster.post(ProtocolEvent::KadPeerStopped(peer)).await;
                     }
                 }
 
@@ -605,9 +600,9 @@ impl<'a> IterativeQuery<'a>
                     let peer_id = peer.peer.node_id.clone();
 
                     let job = QueryJob {
-                        key: key.clone(),
-                        qt: qt.clone(),
-                        messengers: messenger.clone(),
+                        key: me.key.clone(),
+                        qt: me.query_type.clone(),
+                        messengers: me.messengers.clone(),
                         peer: peer_id.clone(),
                         tx: tx.clone()
                     };
