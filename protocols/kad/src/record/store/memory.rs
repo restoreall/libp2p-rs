@@ -108,6 +108,11 @@ impl<'a> RecordStore<'a> for MemoryStore {
         fn(&'a ProviderRecord) -> Cow<'a, ProviderRecord>
     >;
 
+    type ProviderIter = iter::Map<
+        iter::Flatten<hash_map::Values<'a, Key, SmallVec<[ProviderRecord; 20]>>>,
+        fn(&'a ProviderRecord) -> Cow<'a, ProviderRecord>
+    >;
+
     fn get(&'a self, k: &Key) -> Option<Cow<'_, Record>> {
         self.records.get(k).map(Cow::Borrowed)
     }
@@ -194,6 +199,10 @@ impl<'a> RecordStore<'a> for MemoryStore {
 
     fn providers(&'a self, key: &Key) -> Vec<ProviderRecord> {
         self.providers.get(key).map_or_else(Vec::new, |ps| ps.clone().into_vec())
+    }
+
+    fn all_providers(&'a self) -> Self::ProviderIter {
+        self.providers.values().flatten().map(Cow::Borrowed)
     }
 
     fn provided(&'a self) -> Self::ProvidedIter {
@@ -318,6 +327,23 @@ mod tests {
             Err(KadError::MaxProvidedKeys) => {}
             _ => panic!("Unexpected result"),
         }
+    }
+
+    #[test]
+    fn test_provider_iterator() {
+        let mut store = MemoryStore::new(PeerId::random());
+        let key = random_multihash();
+        for _ in 0..10 {
+            let prv = PeerId::random();
+            let rec = ProviderRecord::new(key.clone(), prv, Vec::new());
+            store.add_provider(rec);
+        }
+
+        let r = store.providers(&Key::from(key));
+        assert_eq!(r.len(), 10);
+
+        let v = store.all_providers().count();
+        assert_eq!(v, 10);
     }
 }
 

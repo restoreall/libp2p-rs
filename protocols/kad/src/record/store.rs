@@ -51,6 +51,7 @@ pub type Result<T> = std::result::Result<T, KadError>;
 pub trait RecordStore<'a> {
     type RecordsIter: Iterator<Item = Cow<'a, Record>>;
     type ProvidedIter: Iterator<Item = Cow<'a, ProviderRecord>>;
+    type ProviderIter: Iterator<Item = Cow<'a, ProviderRecord>>;
 
     /// Gets a record from the store, given its key.
     fn get(&'a self, k: &Key) -> Option<Cow<'_, Record>>;
@@ -73,6 +74,8 @@ pub trait RecordStore<'a> {
 
     /// Gets a copy of the stored provider records for the given key.
     fn providers(&'a self, key: &Key) -> Vec<ProviderRecord>;
+
+    fn all_providers(&'a self) -> Self::ProviderIter;
 
     /// Gets an iterator over all stored provider records for which the
     /// node owning the store is itself the provider.

@@ -1355,7 +1355,9 @@ impl<TStore> Kademlia<TStore>
         let now = Instant::now();
         log::info!("handle_provider_cleanup, invoked at {:?}", now);
 
-        let provider_records = self.store.provided()
+        // TODO: it is pretty confusing that self-owned Providers get recycled!!!
+        //let provider_records = self.store.provided()
+        let provider_records = self.store.all_providers()
             .filter(|r| r.is_expired(now))
             .map(|r| r.into_owned())
             .collect::<Vec<_>>();
