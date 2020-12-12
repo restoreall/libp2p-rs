@@ -935,24 +935,24 @@ impl<TStore> Kademlia<TStore>
                         let addresses = Addresses::new(a);
                         match entry.insert(addresses.clone(), new_status) {
                             kbucket::InsertResult::Inserted => {
-                                let event = KademliaEvent::RoutingUpdated {
-                                    peer: peer.clone(),
-                                    addresses,
-                                    old_peer: None,
-                                };
+                                // let event = KademliaEvent::RoutingUpdated {
+                                //     peer: peer.clone(),
+                                //     addresses,
+                                //     old_peer: None,
+                                // };
                                 // self.queued_events.push_back(
                                 //     NetworkBehaviourAction::GenerateEvent(event));
                             },
                             kbucket::InsertResult::Full => {
                                 log::debug!("Bucket full. Peer not added to routing table: {}", peer);
-                                let address = addresses.first().clone();
+                                //let address = addresses.first().clone();
                                 // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
                                 //     KademliaEvent::RoutablePeer { peer, address }
                                 // ));
                             },
                             kbucket::InsertResult::Pending { disconnected } => {
                                 debug_assert!(!self.connected_peers.contains(disconnected.preimage()));
-                                let address = addresses.first().clone();
+                                //let address = addresses.first().clone();
                                 // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
                                 //     KademliaEvent::PendingRoutablePeer { peer, address }
                                 // ));
