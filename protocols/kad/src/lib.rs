@@ -31,7 +31,6 @@ pub mod kad;
 
 mod addresses;
 mod control;
-mod jobs;
 mod query;
 mod task_limit;
 

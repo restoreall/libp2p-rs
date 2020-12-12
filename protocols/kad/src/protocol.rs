@@ -826,25 +826,20 @@ pub enum ProtocolEvent {
     ///
     /// This notification comes from Protocol Notifiee trait.
     PeerDisconnected(PeerId),
-    /// A new peer found when trying to lookup a 'Key' or receiving a
-    /// query from peer.
+
+    /// A new peer found when trying to query a 'Key' or receiving a
+    /// query from peer, which obviously implies we are talking to an
+    /// valid and live Kad Peer, since we have done protocol negotiating
+    /// with it.
     ///
     /// This notification comes from either a query or a forced activity.
     /// The 'bool' parameter 'true' means if it comes from a query.
     KadPeerFound(PeerId, bool),
     /// A Kad peer stopped when it is being connected/queried.
     ///
-    /// This notification comes from either a query activity.
+    /// Typically, this comes from either a query activity or an event
+    /// notification from event bus(TBD).
     KadPeerStopped(PeerId),
-    /// The configured protocol name has been confirmed by the peer through
-    /// a successfully negotiated substream.
-    ///
-    /// This event is only emitted once by a handler upon the first
-    /// successfully negotiated inbound or outbound substream and
-    /// indicates that the connected peer participates in the Kademlia
-    /// overlay network identified by the configured protocol name.
-    // TODO: ConnectedPoint
-    ProtocolConfirmed { endpoint: u32/*ConnectedPoint*/ },
 
     /// Timer event for Provider cleanup.
     ProviderCleanupTimer,

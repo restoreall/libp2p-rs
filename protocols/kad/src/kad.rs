@@ -41,7 +41,6 @@ use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg,
 use crate::control::{Control, ControlCommand};
 
 use crate::query::{QueryConfig, IterativeQuery, QueryType, PeerRecord, FixedQuery};
-use crate::jobs::{AddProviderJob, PutRecordJob};
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
 use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
@@ -76,15 +75,7 @@ pub struct Kademlia<TStore> {
     /// The timer task handle of Provider cleanup job.
     provider_timer_handle: Option<JoinHandle<()>>,
 
-    /// Periodic job for re-publication of provider records for keys
-    /// provided by the local node.
-    add_provider_job: Option<AddProviderJob>,
-
-    /// Periodic job for (re-)replication and (re-)publishing of
-    /// regular (value-)records.
-    put_record_job: Option<PutRecordJob>,
-
-    /// The interval to cleanup expired provider records.
+    /// The periodic interval to cleanup expired provider records.
     cleanup_interval: Duration,
 
     /// The TTL of regular (value-)records.
@@ -386,20 +377,6 @@ impl<TStore> Kademlia<TStore>
     pub fn with_config(id: PeerId, store: TStore, config: KademliaConfig) -> Self {
         let local_key = kbucket::Key::new(id.clone());
 
-        let put_record_job = config
-            .record_replication_interval
-            .or(config.record_publication_interval)
-            .map(|interval| PutRecordJob::new(
-                id.clone(),
-                interval,
-                config.record_publication_interval,
-                config.record_ttl,
-            ));
-
-        let add_provider_job = config
-            .provider_publication_interval
-            .map(AddProviderJob::new);
-
         let (event_tx, event_rx) = mpsc::unbounded();
         let (control_tx, control_rx) = mpsc::unbounded();
 
@@ -417,8 +394,6 @@ impl<TStore> Kademlia<TStore>
             messengers: None,
             connected_peers: Default::default(),
             provider_timer_handle: None,
-            add_provider_job,
-            put_record_job,
             cleanup_interval: config.cleanup_interval,
             record_ttl: config.record_ttl,
             provider_record_ttl: config.provider_record_ttl,
@@ -1062,15 +1037,6 @@ impl<TStore> Kademlia<TStore>
         // The smaller TTL prevails. Only if neither TTL is set is the record
         // stored "forever".
         record.expires = record.expires.or(expiration).min(expiration);
-
-        if let Some(job) = self.put_record_job.as_mut() {
-            // Ignore the record in the next run of the replication
-            // job, since we can assume the sender replicated the
-            // record to the k closest peers. Effectively, only
-            // one of the k closest peers performs a replication
-            // in the configured interval, assuming a shared interval.
-            job.skip(record.key.clone())
-        }
 
         // While records received from a publisher, as well as records that do
         // not exist locally should always (attempted to) be stored, there is a
