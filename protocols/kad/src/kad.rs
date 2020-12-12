@@ -55,9 +55,6 @@ pub struct Kademlia<TStore> {
     /// The Kademlia routing table.
     kbuckets: KBucketsTable<kbucket::Key<PeerId>, Addresses>,
 
-    /// The k-bucket insertion strategy.
-    kbucket_inserts: KademliaBucketInserts,
-
     /// Configuration of the wire protocol.
     protocol_config: KademliaProtocolConfig,
 
@@ -115,30 +112,6 @@ pub struct Kademlia<TStore> {
 }
 
 
-/// The configurable strategies for the insertion of peers
-/// and their addresses into the k-buckets of the Kademlia
-/// routing table.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum KademliaBucketInserts {
-    /// Whenever a connection to a peer is established as a
-    /// result of a dialing attempt and that peer is not yet
-    /// in the routing table, it is inserted as long as there
-    /// is a free slot in the corresponding k-bucket. If the
-    /// k-bucket is full but still has a free pending slot,
-    /// it may be inserted into the routing table at a later time if an unresponsive
-    /// disconnected peer is evicted from the bucket.
-    OnConnected,
-    /// New peers and addresses are only added to the routing table via
-    /// explicit calls to [`Kademlia::add_address`].
-    ///
-    /// > **Note**: Even though peers can only get into the
-    /// > routing table as a result of [`Kademlia::add_address`],
-    /// > routing table entries are still updated as peers
-    /// > connect and disconnect (i.e. the order of the entries
-    /// > as well as the network addresses).
-    Manual,
-}
-
 /// The configuration for the `Kademlia` behaviour.
 ///
 /// The configuration is consumed by [`Kademlia::new`].
@@ -154,7 +127,6 @@ pub struct KademliaConfig {
     provider_record_ttl: Option<Duration>,
     provider_publication_interval: Option<Duration>,
     connection_idle_timeout: Duration,
-    kbucket_inserts: KademliaBucketInserts,
 }
 
 impl Default for KademliaConfig {
@@ -170,7 +142,6 @@ impl Default for KademliaConfig {
             provider_publication_interval: Some(Duration::from_secs(12 * 60 * 60)),
             provider_record_ttl: Some(Duration::from_secs(24 * 60 * 60)),
             connection_idle_timeout: Duration::from_secs(10),
-            kbucket_inserts: KademliaBucketInserts::OnConnected,
         }
     }
 }
@@ -336,12 +307,6 @@ impl KademliaConfig {
         self.protocol_config.set_max_packet_size(size);
         self
     }
-
-    /// Sets the k-bucket insertion strategy for the Kademlia routing table.
-    pub fn set_kbucket_inserts(&mut self, inserts: KademliaBucketInserts) -> &mut Self {
-        self.kbucket_inserts = inserts;
-        self
-    }
 }
 
 /// KadPoster is used to generate ProtocolEvent to Kad main loop.
@@ -388,7 +353,6 @@ impl<TStore> Kademlia<TStore>
             control_tx,
             control_rx,
             kbuckets: KBucketsTable::new(local_key, config.kbucket_pending_timeout),
-            kbucket_inserts: config.kbucket_inserts,
             protocol_config: config.protocol_config,
             query_config: config.query_config,
             messengers: None,
@@ -961,18 +925,13 @@ impl<TStore> Kademlia<TStore>
                 if new_status != NodeStatus::Connected {
                     return
                 }
-                match (address, self.kbucket_inserts) {
-                    (None, _) => {
+                match address {
+                    None => {
                         // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
                         //     KademliaEvent::UnroutablePeer { peer }
                         // ));
                     }
-                    (Some(a), KademliaBucketInserts::Manual) => {
-                        // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                        //     KademliaEvent::RoutablePeer { peer, address: a }
-                        // ));
-                    }
-                    (Some(a), KademliaBucketInserts::OnConnected) => {
+                    Some(a) => {
                         let addresses = Addresses::new(a);
                         match entry.insert(addresses.clone(), new_status) {
                             kbucket::InsertResult::Inserted => {
