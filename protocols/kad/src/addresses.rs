@@ -21,6 +21,44 @@
 use std::fmt;
 use smallvec::SmallVec;
 use libp2prs_core::Multiaddr;
+use std::time::Instant;
+
+/// The information of a peer in Kad routing table.
+#[derive(Clone, Debug)]
+pub struct PeerInfo {
+    /// LastUsefulAt is the time instant at which the peer was last "useful" to us.
+    last_used_at: Instant,
+
+    /// The time instant at which we last got a successful query response from the peer.
+    last_query_at: Instant,
+
+    /// The time this peer was added to the routing table.
+    added_at: Instant,
+
+    /// If a bucket is full, this peer can be replaced to make space for a new peer.
+    replaceable: bool
+}
+
+impl PeerInfo {
+    pub(crate) fn new() -> Self {
+        Self {
+            last_used_at: Instant::now(),
+            last_query_at: Instant::now(),
+            added_at: Instant::now(),
+            replaceable: false
+        }
+    }
+
+    // TODO:
+    pub(crate) fn insert(&mut self, addr: Multiaddr) -> bool {
+        true
+    }
+
+    pub fn remove(&mut self, addr: &Multiaddr) -> Result<(),()> {
+        Ok(())
+    }
+}
+
 
 /// A non-empty list of (unique) addresses of a peer in the routing table.
 #[derive(Clone)]

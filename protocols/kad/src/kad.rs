@@ -33,6 +33,7 @@ use futures::{
 use futures::lock::Mutex;
 
 use async_std::task;
+use async_std::task::JoinHandle;
 
 use libp2prs_core::{PeerId, Multiaddr};
 use libp2prs_swarm::Control as SwarmControl;
@@ -44,7 +45,7 @@ use crate::query::{QueryConfig, IterativeQuery, QueryType, PeerRecord, FixedQuer
 use crate::kbucket::{KBucketsTable, NodeStatus};
 use crate::store::RecordStore;
 use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
-use async_std::task::JoinHandle;
+use crate::addresses::PeerInfo;
 
 
 type Result<T> = std::result::Result<T, KadError>;
@@ -53,7 +54,7 @@ type Result<T> = std::result::Result<T, KadError>;
 /// `Kademlia` implements the libp2p Kademlia protocol.
 pub struct Kademlia<TStore> {
     /// The Kademlia routing table.
-    kbuckets: KBucketsTable<kbucket::Key<PeerId>, Addresses>,
+    kbuckets: KBucketsTable<kbucket::Key<PeerId>, PeerInfo>,
 
     /// Configuration of the wire protocol.
     protocol_config: KademliaProtocolConfig,
@@ -484,7 +485,7 @@ impl<TStore> Kademlia<TStore>
     /// Returns `None` if the peer was not in the routing table,
     /// not even pending insertion.
     pub fn remove_peer(&mut self, peer: &PeerId)
-                       -> Option<kbucket::EntryView<kbucket::Key<PeerId>, Addresses>>
+                       -> Option<kbucket::EntryView<kbucket::Key<PeerId>, PeerInfo>>
     {
         let key = kbucket::Key::new(peer.clone());
         match self.kbuckets.entry(&key) {
@@ -502,7 +503,7 @@ impl<TStore> Kademlia<TStore>
 
     /// Returns an iterator over all non-empty buckets in the routing table.
     fn kbuckets(&mut self)
-                    -> impl Iterator<Item = kbucket::KBucketRef<'_, kbucket::Key<PeerId>, Addresses>>
+                    -> impl Iterator<Item = kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>>
     {
         self.kbuckets.iter().filter(|b| !b.is_empty())
     }
@@ -511,7 +512,7 @@ impl<TStore> Kademlia<TStore>
     ///
     /// Returns `None` if the given key refers to the local key.
     pub fn kbucket<K>(&mut self, key: K)
-                      -> Option<kbucket::KBucketRef<'_, kbucket::Key<PeerId>, Addresses>>
+                      -> Option<kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>>
         where
             K: Borrow<[u8]> + Clone
     {
@@ -820,7 +821,8 @@ impl<TStore> Kademlia<TStore>
                     };
                     KadPeer {
                         node_id,
-                        multiaddrs: n.node.value.into_vec(),
+                        // TODO:
+                        multiaddrs: vec!(),//n.node.value.into_vec(),
                         connection_ty
                     }
                 })
@@ -856,7 +858,9 @@ impl<TStore> Kademlia<TStore>
                             Some(local_addrs.iter().cloned().collect::<Vec<_>>())
                         } else {
                             let key = kbucket::Key::new(node_id.clone());
-                            kbuckets.entry(&key).view().map(|e| e.node.value.clone().into_vec())
+                            //kbuckets.entry(&key).view().map(|e| e.node.value.clone().into_vec())
+                            // TODO: FIX
+                            Some(local_addrs.iter().cloned().collect::<Vec<_>>())
                         }
                     } else {
                         Some(multiaddrs)
@@ -908,26 +912,12 @@ impl<TStore> Kademlia<TStore>
         let key = kbucket::Key::new(peer.clone());
         match self.kbuckets.entry(&key) {
             kbucket::Entry::Present(mut entry, old_status) => {
-                if let Some(address) = address {
-                    if entry.value().insert(address) {
-                        // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                        //     KademliaEvent::RoutingUpdated {
-                        //         peer,
-                        //         addresses: entry.value().clone(),
-                        //         old_peer: None,
-                        //     }
-                        // ))
-                    }
-                }
                 if old_status != new_status {
                     entry.update(new_status);
                 }
             },
 
             kbucket::Entry::Pending(mut entry, old_status) => {
-                if let Some(address) = address {
-                    entry.value().insert(address);
-                }
                 if old_status != new_status {
                     entry.update(new_status);
                 }
@@ -938,44 +928,35 @@ impl<TStore> Kademlia<TStore>
                 if new_status != NodeStatus::Connected {
                     return
                 }
-                match address {
-                    None => {
+                let info = PeerInfo::new();
+                match entry.insert(info, new_status) {
+                    kbucket::InsertResult::Inserted => {
+                        // let event = KademliaEvent::RoutingUpdated {
+                        //     peer: peer.clone(),
+                        //     addresses,
+                        //     old_peer: None,
+                        // };
+                        // self.queued_events.push_back(
+                        //     NetworkBehaviourAction::GenerateEvent(event));
+                    },
+                    kbucket::InsertResult::Full => {
+                        log::debug!("Bucket full. Peer not added to routing table: {}", peer);
+                        //let address = addresses.first().clone();
                         // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                        //     KademliaEvent::UnroutablePeer { peer }
+                        //     KademliaEvent::RoutablePeer { peer, address }
                         // ));
-                    }
-                    Some(a) => {
-                        let addresses = Addresses::new(a);
-                        match entry.insert(addresses.clone(), new_status) {
-                            kbucket::InsertResult::Inserted => {
-                                // let event = KademliaEvent::RoutingUpdated {
-                                //     peer: peer.clone(),
-                                //     addresses,
-                                //     old_peer: None,
-                                // };
-                                // self.queued_events.push_back(
-                                //     NetworkBehaviourAction::GenerateEvent(event));
-                            },
-                            kbucket::InsertResult::Full => {
-                                log::debug!("Bucket full. Peer not added to routing table: {}", peer);
-                                //let address = addresses.first().clone();
-                                // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                                //     KademliaEvent::RoutablePeer { peer, address }
-                                // ));
-                            },
-                            kbucket::InsertResult::Pending { disconnected } => {
-                                debug_assert!(!self.connected_peers.contains(disconnected.preimage()));
-                                //let address = addresses.first().clone();
-                                // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                                //     KademliaEvent::PendingRoutablePeer { peer, address }
-                                // ));
-                                // self.queued_events.push_back(NetworkBehaviourAction::DialPeer {
-                                //     peer_id: disconnected.into_preimage(),
-                                //     condition: DialPeerCondition::Disconnected
-                                // })
-                            },
-                        }
-                    }
+                    },
+                    kbucket::InsertResult::Pending { disconnected } => {
+                        debug_assert!(!self.connected_peers.contains(disconnected.preimage()));
+                        //let address = addresses.first().clone();
+                        // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
+                        //     KademliaEvent::PendingRoutablePeer { peer, address }
+                        // ));
+                        // self.queued_events.push_back(NetworkBehaviourAction::DialPeer {
+                        //     peer_id: disconnected.into_preimage(),
+                        //     condition: DialPeerCondition::Disconnected
+                        // })
+                    },
                 }
             },
             _ => {}
