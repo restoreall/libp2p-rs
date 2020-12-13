@@ -1175,6 +1175,15 @@ impl<TStore> Kademlia<TStore>
     async fn handle_peer_disconnected(&mut self, peer_id: PeerId) {
         // remove the peer from the hashset
         self.connected_peers.remove(&peer_id);
+        // remove the cached messenger which belong to the disconnected connection
+        // Note: self.connected_peers is a HashSet indexed by PeerId, but there is
+        // a possibility that we have 2 connections to the remote peer. Thus, with
+        // any peer disconnected notification, we remove the cached messenger anyway.
+        // It is acceptable, as we can always re-open a messenger...
+        if let Some(cache) = &mut self.messengers {
+            cache.clear_messengers(&peer_id).await;
+        }
+
         // TODO: figure out what it shall do
         self.connection_updated(peer_id, None, NodeStatus::Disconnected);
     }
@@ -1490,5 +1499,10 @@ impl MessengerManager {
                 cache.insert(peer.clone(), messenger);
             }
         }
+    }
+
+    pub(crate) async fn clear_messengers(&mut self, peer_id: &PeerId) {
+        let mut cache = self.cache.lock().await;
+        cache.remove(peer_id);
     }
 }
