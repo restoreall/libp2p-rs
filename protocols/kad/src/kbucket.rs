@@ -87,9 +87,6 @@ pub struct KBucketsTable<TKey, TVal> {
     local_key: TKey,
     /// The buckets comprising the routing table.
     buckets: Vec<KBucket<TKey, TVal>>,
-    /// The list of evicted entries that have been replaced with pending
-    /// entries since the last call to [`KBucketsTable::take_applied_pending`].
-    applied_pending: VecDeque<AppliedPending<TKey, TVal>>
 }
 
 /// A (type-safe) index into a `KBucketsTable`, i.e. a non-negative integer in the
@@ -156,7 +153,6 @@ where
         KBucketsTable {
             local_key,
             buckets: (0 .. NUM_BUCKETS).map(|_| KBucket::new(pending_timeout)).collect(),
-            applied_pending: VecDeque::new()
         }
     }
 
@@ -171,9 +167,6 @@ where
         let index = BucketIndex::new(&self.local_key.as_ref().distance(key));
         if let Some(i) = index {
             let bucket = &mut self.buckets[i.get()];
-            if let Some(applied) = bucket.apply_pending() {
-                self.applied_pending.push_back(applied)
-            }
             Entry::new(bucket, key)
         } else {
             Entry::SelfEntry
@@ -185,11 +178,7 @@ where
     /// The buckets are ordered by proximity to the `local_key`, i.e. the first
     /// bucket is the closest bucket (containing at most one key).
     pub fn iter<'a>(&'a mut self) -> impl Iterator<Item = KBucketRef<'a, TKey, TVal>> + 'a {
-        let applied_pending = &mut self.applied_pending;
         self.buckets.iter_mut().enumerate().map(move |(i, b)| {
-            if let Some(applied) = b.apply_pending() {
-                applied_pending.push_back(applied)
-            }
             KBucketRef {
                 index: BucketIndex(i),
                 bucket: b
@@ -207,29 +196,10 @@ where
         let d = self.local_key.as_ref().distance(key);
         if let Some(index) = BucketIndex::new(&d) {
             let bucket = &mut self.buckets[index.0];
-            if let Some(applied) = bucket.apply_pending() {
-                self.applied_pending.push_back(applied)
-            }
             Some(KBucketRef { bucket, index })
         } else {
             None
         }
-    }
-
-    /// Consumes the next applied pending entry, if any.
-    ///
-    /// When an entry is attempted to be inserted and the respective bucket is full,
-    /// it may be recorded as pending insertion after a timeout, see [`InsertResult::Pending`].
-    ///
-    /// If the oldest currently disconnected entry in the respective bucket does not change
-    /// its status until the timeout of pending entry expires, it is evicted and
-    /// the pending entry inserted instead. These insertions of pending entries
-    /// happens lazily, whenever the `KBucketsTable` is accessed, and the corresponding
-    /// buckets are updated accordingly. The fact that a pending entry was applied is
-    /// recorded in the `KBucketsTable` in the form of `AppliedPending` results, which must be
-    /// consumed by calling this function.
-    pub fn take_applied_pending(&mut self) -> Option<AppliedPending<TKey, TVal>> {
-        self.applied_pending.pop_front()
     }
 
     /// Returns an iterator over the keys closest to `target`, ordered by
@@ -429,9 +399,6 @@ where
                 None => {
                     if let Some(i) = self.buckets_iter.next() {
                         let bucket = &mut self.table.buckets[i.get()];
-                        if let Some(applied) = bucket.apply_pending() {
-                            self.table.applied_pending.push_back(applied)
-                        }
                         let mut v = (self.fmap)(bucket);
                         v.sort_by(|a, b|
                             self.target.as_ref().distance(a.as_ref())
@@ -471,11 +438,6 @@ where
     /// Returns the number of entries in the bucket.
     pub fn num_entries(&self) -> usize {
         self.bucket.num_entries()
-    }
-
-    /// Returns true if the bucket has a pending node.
-    pub fn has_pending(&self) -> bool {
-        self.bucket.pending().map_or(false, |n| !n.is_ready())
     }
 
     /// Tests whether the given distance falls into this bucket.

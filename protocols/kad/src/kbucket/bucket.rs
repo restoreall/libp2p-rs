@@ -28,18 +28,6 @@
 pub use crate::K_VALUE;
 use super::*;
 
-/// A `PendingNode` is a `Node` that is pending insertion into a `KBucket`.
-#[derive(Debug, Clone)]
-pub struct PendingNode<TKey, TVal> {
-    /// The pending node to insert.
-    node: Node<TKey, TVal>,
-
-    /// The status of the pending node.
-    status: NodeStatus,
-
-    /// The instant at which the pending node is eligible for insertion into a bucket.
-    replace: Instant,
-}
 
 /// The status of a node in a bucket.
 ///
@@ -52,32 +40,6 @@ pub enum NodeStatus {
     Connected,
     /// The node is considered disconnected.
     Disconnected
-}
-
-impl<TKey, TVal> PendingNode<TKey, TVal> {
-    pub fn key(&self) -> &TKey {
-        &self.node.key
-    }
-
-    pub fn status(&self) -> NodeStatus {
-        self.status
-    }
-
-    pub fn value_mut(&mut self) -> &mut TVal {
-        &mut self.node.value
-    }
-
-    pub fn is_ready(&self) -> bool {
-        Instant::now() >= self.replace
-    }
-
-    pub fn set_ready_at(&mut self, t: Instant) {
-        self.replace = t;
-    }
-
-    pub fn into_node(self) -> Node<TKey, TVal> {
-        self.node
-    }
 }
 
 /// A `Node` in a bucket, representing a peer participating
@@ -103,29 +65,19 @@ pub struct KBucket<TKey, TVal> {
     /// The nodes contained in the bucket.
     nodes: ArrayVec<[Node<TKey, TVal>; K_VALUE.get()]>,
 
-    /// The position (index) in `nodes` that marks the first connected node.
-    ///
-    /// Since the entries in `nodes` are ordered from least-recently connected to
-    /// most-recently connected, all entries above this index are also considered
-    /// connected, i.e. the range `[0, first_connected_pos)` marks the sub-list of entries
-    /// that are considered disconnected and the range
-    /// `[first_connected_pos, K_VALUE)` marks sub-list of entries that are
-    /// considered connected.
-    ///
-    /// `None` indicates that there are no connected entries in the bucket, i.e.
-    /// the bucket is either empty, or contains only entries for peers that are
-    /// considered disconnected.
-    first_connected_pos: Option<usize>,
-
-    /// A node that is pending to be inserted into a full bucket, should the
-    /// least-recently connected (and currently disconnected) node not be
-    /// marked as connected within `unresponsive_timeout`.
-    pending: Option<PendingNode<TKey, TVal>>,
-
-    /// The timeout window before a new pending node is eligible for insertion,
-    /// if the least-recently connected node is not updated as being connected
-    /// in the meantime.
-    pending_timeout: Duration
+    // /// The position (index) in `nodes` that marks the first connected node.
+    // ///
+    // /// Since the entries in `nodes` are ordered from least-recently connected to
+    // /// most-recently connected, all entries above this index are also considered
+    // /// connected, i.e. the range `[0, first_connected_pos)` marks the sub-list of entries
+    // /// that are considered disconnected and the range
+    // /// `[first_connected_pos, K_VALUE)` marks sub-list of entries that are
+    // /// considered connected.
+    // ///
+    // /// `None` indicates that there are no connected entries in the bucket, i.e.
+    // /// the bucket is either empty, or contains only entries for peers that are
+    // /// considered disconnected.
+    // first_connected_pos: Option<usize>,
 }
 
 /// The result of inserting an entry into a bucket.
@@ -170,26 +122,7 @@ where
     pub fn new(pending_timeout: Duration) -> Self {
         KBucket {
             nodes: ArrayVec::new(),
-            first_connected_pos: None,
-            pending: None,
-            pending_timeout,
         }
-    }
-
-    /// Returns a reference to the pending node of the bucket, if there is any.
-    pub fn pending(&self) -> Option<&PendingNode<TKey, TVal>> {
-        self.pending.as_ref()
-    }
-
-    /// Returns a mutable reference to the pending node of the bucket, if there is any.
-    pub fn pending_mut(&mut self) -> Option<&mut PendingNode<TKey, TVal>> {
-        self.pending.as_mut()
-    }
-
-    /// Returns a reference to the pending node of the bucket, if there is any
-    /// with a matching key.
-    pub fn as_pending(&self, key: &TKey) -> Option<&PendingNode<TKey, TVal>> {
-        self.pending().filter(|p| p.node.key.as_ref() == key.as_ref())
     }
 
     /// Returns a reference to a node in the bucket.
@@ -199,78 +132,7 @@ where
 
     /// Returns an iterator over the nodes in the bucket, together with their status.
     pub fn iter(&self) -> impl Iterator<Item = (&Node<TKey, TVal>, NodeStatus)> {
-        self.nodes.iter().enumerate().map(move |(p, n)| (n, self.status(Position(p))))
-    }
-
-    /// Inserts the pending node into the bucket, if its timeout has elapsed,
-    /// replacing the least-recently connected node.
-    ///
-    /// If a pending node has been inserted, its key is returned together with
-    /// the node that was replaced. `None` indicates that the nodes in the
-    /// bucket remained unchanged.
-    pub fn apply_pending(&mut self) -> Option<AppliedPending<TKey, TVal>> {
-        if let Some(pending) = self.pending.take() {
-            if pending.replace <= Instant::now() {
-                if self.nodes.is_full() {
-                    if self.status(Position(0)) == NodeStatus::Connected {
-                        // The bucket is full with connected nodes. Drop the pending node.
-                        return None
-                    }
-                    debug_assert!(self.first_connected_pos.map_or(true, |p| p > 0)); // (*)
-                    // The pending node will be inserted.
-                    let inserted = pending.node.clone();
-                    // A connected pending node goes at the end of the list for
-                    // the connected peers, removing the least-recently connected.
-                    if pending.status == NodeStatus::Connected {
-                        let evicted = Some(self.nodes.remove(0));
-                        self.first_connected_pos = self.first_connected_pos
-                            .map_or_else(
-                                | | Some(self.nodes.len()),
-                                |p| p.checked_sub(1));
-                        self.nodes.push(pending.node);
-                        return Some(AppliedPending { inserted, evicted })
-                    }
-                    // A disconnected pending node goes at the end of the list
-                    // for the disconnected peers.
-                    else if let Some(p) = self.first_connected_pos {
-                        let insert_pos = p.checked_sub(1).expect("by (*)");
-                        let evicted = Some(self.nodes.remove(0));
-                        self.nodes.insert(insert_pos, pending.node);
-                        return Some(AppliedPending { inserted, evicted })
-                    } else {
-                        // All nodes are disconnected. Insert the new node as the most
-                        // recently disconnected, removing the least-recently disconnected.
-                        let evicted = Some(self.nodes.remove(0));
-                        self.nodes.push(pending.node);
-                        return Some(AppliedPending { inserted, evicted })
-                    }
-                } else {
-                    // There is room in the bucket, so just insert the pending node.
-                    let inserted = pending.node.clone();
-                    match self.insert(pending.node, pending.status) {
-                        InsertResult::Inserted =>
-                            return Some(AppliedPending { inserted, evicted: None }),
-                        _ => unreachable!("Bucket is not full.")
-                    }
-                }
-            } else {
-                self.pending = Some(pending);
-            }
-        }
-
-        return None
-    }
-
-    /// Updates the status of the pending node, if any.
-    pub fn update_pending(&mut self, status: NodeStatus) {
-        if let Some(pending) = &mut self.pending {
-            pending.status = status
-        }
-    }
-
-    /// Removes the pending node from the bucket, if any.
-    pub fn remove_pending(&mut self) -> Option<PendingNode<TKey, TVal>> {
-        self.pending.take()
+        self.nodes.iter().enumerate().map(move |(p, n)| (n, NodeStatus::Connected))
     }
 
     /// Updates the status of the node referred to by the given key, if it is
@@ -281,12 +143,7 @@ where
         // prefix list of disconnected nodes or the suffix list of connected
         // nodes (i.e. most-recently disconnected or most-recently connected,
         // respectively).
-        if let Some((node, _status, pos)) = self.remove(key) {
-            // If the least-recently connected node re-establishes its
-            // connected status, drop the pending node.
-            if pos == Position(0) && status == NodeStatus::Connected {
-                self.pending = None
-            }
+        if let Some((node, pos)) = self.remove(key) {
             // Reinsert the node with the desired status.
             match self.insert(node, status) {
                 InsertResult::Inserted => {},
@@ -313,95 +170,29 @@ where
     ///     the new node is added as the last element of the bucket.
     ///
     pub fn insert(&mut self, node: Node<TKey, TVal>, status: NodeStatus) -> InsertResult<TKey> {
-        match status {
-            NodeStatus::Connected => {
-                if self.nodes.is_full() {
-                    if self.first_connected_pos == Some(0) || self.pending.is_some() {
-                        return InsertResult::Full
-                    } else {
-                        self.pending = Some(PendingNode {
-                            node,
-                            status: NodeStatus::Connected,
-                            replace: Instant::now() + self.pending_timeout,
-                        });
-                        return InsertResult::Pending {
-                            disconnected: self.nodes[0].key.clone()
-                        }
-                    }
-                }
-                let pos = self.nodes.len();
-                self.first_connected_pos = self.first_connected_pos.or(Some(pos));
-                self.nodes.push(node);
-                InsertResult::Inserted
-            }
-            NodeStatus::Disconnected => {
-                if self.nodes.is_full() {
-                    return InsertResult::Full
-                }
-                if let Some(ref mut p) = self.first_connected_pos {
-                    self.nodes.insert(*p, node);
-                    *p += 1;
-                } else {
-                    self.nodes.push(node);
-                }
-                InsertResult::Inserted
-            }
+        if self.nodes.is_full() {
+            // TODO: replaceable
+            InsertResult::Full
+        } else {
+            self.nodes.push(node);
+            InsertResult::Inserted
         }
     }
 
     /// Removes the node with the given key from the bucket, if it exists.
-    pub fn remove(&mut self, key: &TKey) -> Option<(Node<TKey, TVal>, NodeStatus, Position)> {
+    pub fn remove(&mut self, key: &TKey) -> Option<(Node<TKey, TVal>, Position)> {
         if let Some(pos) = self.position(key) {
             // Remove the node from its current position.
-            let status = self.status(pos);
             let node = self.nodes.remove(pos.0);
-            // Adjust `first_connected_pos` accordingly.
-            match status {
-                NodeStatus::Connected =>
-                    if self.first_connected_pos.map_or(false, |p| p == pos.0) {
-                        if pos.0 == self.nodes.len() {
-                            // It was the last connected node.
-                            self.first_connected_pos = None
-                        }
-                    }
-                NodeStatus::Disconnected =>
-                    if let Some(ref mut p) = self.first_connected_pos {
-                        *p -= 1;
-                    }
-            }
-            Some((node, status, pos))
+            Some((node, pos))
         } else {
             None
         }
     }
 
-    /// Returns the status of the node at the given position.
-    pub fn status(&self, pos: Position) -> NodeStatus {
-        if self.first_connected_pos.map_or(false, |i| pos.0 >= i) {
-            NodeStatus::Connected
-        } else {
-            NodeStatus::Disconnected
-        }
-    }
-
-    /// Checks whether the given position refers to a connected node.
-    pub fn is_connected(&self, pos: Position) -> bool {
-        self.status(pos) == NodeStatus::Connected
-    }
-
     /// Gets the number of entries currently in the bucket.
     pub fn num_entries(&self) -> usize {
         self.nodes.len()
-    }
-
-    /// Gets the number of entries in the bucket that are considered connected.
-    pub fn num_connected(&self) -> usize {
-        self.first_connected_pos.map_or(0, |i| self.nodes.len() - i)
-    }
-
-    /// Gets the number of entries in the bucket that are considered disconnected.
-    pub fn num_disconnected(&self) -> usize {
-        self.nodes.len() - self.num_connected()
     }
 
     /// Gets the position of an node in the bucket.

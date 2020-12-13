@@ -492,9 +492,6 @@ impl<TStore> Kademlia<TStore>
             kbucket::Entry::Present(entry, _) => {
                 Some(entry.remove())
             }
-            kbucket::Entry::Pending(entry, _) => {
-                Some(entry.remove())
-            }
             kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => {
                 None
             }
@@ -912,12 +909,6 @@ impl<TStore> Kademlia<TStore>
         let key = kbucket::Key::new(peer.clone());
         match self.kbuckets.entry(&key) {
             kbucket::Entry::Present(mut entry, old_status) => {
-                if old_status != new_status {
-                    entry.update(new_status);
-                }
-            },
-
-            kbucket::Entry::Pending(mut entry, old_status) => {
                 if old_status != new_status {
                     entry.update(new_status);
                 }

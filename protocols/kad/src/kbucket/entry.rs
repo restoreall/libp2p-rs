@@ -77,8 +77,6 @@ impl<TKey: AsRef<KeyBytes>, TVal> AsRef<KeyBytes> for EntryView<TKey, TVal> {
 pub enum Entry<'a, TPeerId, TVal> {
     /// The entry is present in a bucket.
     Present(PresentEntry<'a, TPeerId, TVal>, NodeStatus),
-    /// The entry is pending insertion in a bucket.
-    Pending(PendingEntry<'a, TPeerId, TVal>, NodeStatus),
     /// The entry is absent and may be inserted.
     Absent(AbsentEntry<'a, TPeerId, TVal>),
     /// The entry represents the local node.
@@ -101,11 +99,9 @@ where
     /// Creates a new `Entry` for a `Key`, encapsulating access to a bucket.
     pub(super) fn new(bucket: &'a mut KBucket<TKey, TVal>, key: &'a TKey) -> Self {
         if let Some(pos) = bucket.position(key) {
-            let status = bucket.status(pos);
+            // TODO: status
+            let status = NodeStatus::Connected;
             Entry::Present(PresentEntry::new(bucket, key), status)
-        } else if let Some(pending) = bucket.as_pending(key) {
-            let status = pending.status();
-            Entry::Pending(PendingEntry::new(bucket, key), status)
         } else {
             Entry::Absent(AbsentEntry::new(bucket, key))
         }
@@ -124,13 +120,6 @@ where
                 },
                 status: *status
             }),
-            Entry::Pending(entry, status) => Some(EntryRefView {
-                node: NodeRefView {
-                    key: entry.0.key,
-                    value: entry.value()
-                },
-                status: *status
-            }),
             _ => None
         }
     }
@@ -143,7 +132,6 @@ where
     pub fn key(&self) -> Option<&TKey> {
         match self {
             Entry::Present(entry, _) => Some(entry.key()),
-            Entry::Pending(entry, _) => Some(entry.key()),
             Entry::Absent(entry) => Some(entry.key()),
             Entry::SelfEntry => None,
         }
@@ -156,7 +144,6 @@ where
     pub fn value(&mut self) -> Option<&mut TVal> {
         match self {
             Entry::Present(entry, _) => Some(entry.value()),
-            Entry::Pending(entry, _) => Some(entry.value()),
             Entry::Absent(_) => None,
             Entry::SelfEntry => None,
         }
@@ -197,54 +184,11 @@ where
 
     /// Removes the entry from the bucket.
     pub fn remove(self) -> EntryView<TKey, TVal> {
-        let (node, status, _pos) = self.0.bucket
+        let (node, _pos) = self.0.bucket
             .remove(&self.0.key)
             .expect("We can only build a PresentEntry if the entry is in the bucket; QED");
-        EntryView { node, status }
-    }
-}
-
-/// An entry waiting for a slot to be available in a bucket.
-#[derive(Debug)]
-pub struct PendingEntry<'a, TKey, TVal>(EntryRef<'a, TKey, TVal>);
-
-impl<'a, TKey, TVal> PendingEntry<'a, TKey, TVal>
-where
-    TKey: Clone + AsRef<KeyBytes>,
-    TVal: Clone
-{
-    fn new(bucket: &'a mut KBucket<TKey, TVal>, key: &'a TKey) -> Self {
-        PendingEntry(EntryRef { bucket, key })
-    }
-
-    /// Returns the key of the entry.
-    pub fn key(&self) -> &TKey {
-        self.0.key
-    }
-
-    /// Returns the value associated with the key.
-    pub fn value(&mut self) -> &mut TVal {
-        self.0.bucket
-            .pending_mut()
-            .expect("We can only build a ConnectedPendingEntry if the entry is pending; QED")
-            .value_mut()
-    }
-
-    /// Updates the status of the pending entry.
-    pub fn update(self, status: NodeStatus) -> PendingEntry<'a, TKey, TVal> {
-        self.0.bucket.update_pending(status);
-        PendingEntry::new(self.0.bucket, self.0.key)
-    }
-
-    /// Removes the pending entry from the bucket.
-    pub fn remove(self) -> EntryView<TKey, TVal> {
-        let pending = self.0.bucket
-            .remove_pending()
-            .expect("We can only build a PendingEntry if the entry is pending insertion
-                    into the bucket; QED");
-        let status = pending.status();
-        let node = pending.into_node();
-        EntryView { node, status }
+        // TODO: status
+        EntryView { node, status: NodeStatus::Connected }
     }
 }
 
