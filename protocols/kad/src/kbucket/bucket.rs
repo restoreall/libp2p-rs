@@ -83,21 +83,13 @@ pub struct KBucket<TKey, TVal> {
 /// The result of inserting an entry into a bucket.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InsertResult<TKey> {
+pub enum InsertResult {
      /// The entry has been successfully inserted.
      Inserted,
      /// The entry is pending insertion because the relevant bucket is currently full.
      /// The entry is inserted after a timeout elapsed, if the status of the
      /// least-recently connected (and currently disconnected) node in the bucket
      /// is not updated before the timeout expires.
-     Pending {
-         /// The key of the least-recently connected entry that is currently considered
-         /// disconnected and whose corresponding peer should be checked for connectivity
-         /// in order to prevent it from being evicted. If connectivity to the peer is
-         /// re-established, the corresponding entry should be updated with
-         /// [`NodeStatus::Connected`].
-         disconnected: TKey
-     },
      /// The entry was not inserted because the relevant bucket is full.
      Full
 }
@@ -141,7 +133,7 @@ where
     ///     i.e. as the most-recently disconnected node. If there are no connected nodes,
     ///     the new node is added as the last element of the bucket.
     ///
-    pub fn insert(&mut self, node: Node<TKey, TVal>) -> InsertResult<TKey> {
+    pub fn insert(&mut self, node: Node<TKey, TVal>) -> InsertResult {
         if self.nodes.is_full() {
             // TODO: replaceable
             InsertResult::Full

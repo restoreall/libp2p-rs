@@ -197,7 +197,7 @@ where
     }
 
     /// Attempts to insert the entry into a bucket.
-    pub fn insert(self, value: TVal) -> InsertResult<TKey> {
+    pub fn insert(self, value: TVal) -> InsertResult {
         self.0.bucket.insert(Node {
             key: self.0.key.clone(),
             value

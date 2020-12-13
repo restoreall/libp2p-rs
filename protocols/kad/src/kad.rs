@@ -480,11 +480,11 @@ impl<TStore> Kademlia<TStore>
         }
     }
 */
-    /// Removes a peer from the routing table.
+    /// Tries to remove a peer from the routing table.
     ///
     /// Returns `None` if the peer was not in the routing table,
     /// not even pending insertion.
-    pub fn remove_peer(&mut self, peer: &PeerId)
+    pub fn try_remove_peer(&mut self, peer: &PeerId)
                        -> Option<kbucket::EntryView<kbucket::Key<PeerId>, PeerInfo>>
     {
         let key = kbucket::Key::new(peer.clone());
@@ -943,16 +943,33 @@ impl<TStore> Kademlia<TStore>
                         //     KademliaEvent::RoutablePeer { peer, address }
                         // ));
                     },
-                    kbucket::InsertResult::Pending { disconnected } => {
-                        debug_assert!(!self.connected_peers.contains(disconnected.preimage()));
-                        //let address = addresses.first().clone();
-                        // self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                        //     KademliaEvent::PendingRoutablePeer { peer, address }
-                        // ));
-                        // self.queued_events.push_back(NetworkBehaviourAction::DialPeer {
-                        //     peer_id: disconnected.into_preimage(),
-                        //     condition: DialPeerCondition::Disconnected
-                        // })
+                }
+            },
+            _ => {}
+        }
+    }
+
+    /// Tries to add a peer into the routing table.
+    ///
+    /// 'queried' means a Kad query is just done with the peer.
+    fn try_add_peer(&mut self, peer: PeerId, queried: bool) {
+        log::trace!("trying add a peer to routing table: {}", peer);
+
+        let key = kbucket::Key::new(peer.clone());
+        match self.kbuckets.entry(&key) {
+            kbucket::Entry::Present(mut entry) => {
+                // already in RT, update the value directly
+                entry.value().set_last_used_at(Instant::now());
+            },
+            kbucket::Entry::Absent(entry) => {
+                let info = PeerInfo::new();
+                match entry.insert(info) {
+                    kbucket::InsertResult::Inserted => {
+                        log::trace!("Peer added to routing table: {}", peer);
+                    },
+                    kbucket::InsertResult::Full => {
+                        // TODO: try replacing a 'old' peer
+                        log::debug!("Bucket full. Peer not added to routing table: {}", peer);
                     },
                 }
             },

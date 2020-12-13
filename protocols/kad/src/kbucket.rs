@@ -76,6 +76,7 @@ use arrayvec::{self, ArrayVec};
 use bucket::KBucket;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+use libp2prs_core::PeerId;
 
 /// Maximum number of k-buckets.
 const NUM_BUCKETS: usize = 256;
