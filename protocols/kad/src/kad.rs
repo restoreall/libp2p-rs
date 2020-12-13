@@ -806,11 +806,24 @@ impl<TStore> Kademlia<TStore>
         if target == self.kbuckets.self_key() {
             Vec::new()
         } else {
+            let connected = &self.connected_peers;
             self.kbuckets
                 .closest(target)
                 .filter(|e| e.node.key.preimage() != source)
                 .take(self.query_config.replication_factor.get())
-                .map(KadPeer::from)
+                .map(|n| {
+                    let node_id = n.node.key.into_preimage();
+                    let connection_ty = if connected.contains(&node_id) {
+                        KadConnectionType::Connected
+                    } else {
+                        KadConnectionType::NotConnected
+                    };
+                    KadPeer {
+                        node_id,
+                        multiaddrs: n.node.value.into_vec(),
+                        connection_ty
+                    }
+                })
                 .collect()
         }
     }
@@ -818,7 +831,7 @@ impl<TStore> Kademlia<TStore>
     /// Collects all peers who are known to be providers of the value for a given `Multihash`.
     fn provider_peers(&mut self, key: &record::Key, source: Option<&PeerId>) -> Vec<KadPeer> {
         let kbuckets = &mut self.kbuckets;
-        let connected = &mut self.connected_peers;
+        let connected = &self.connected_peers;
         let local_addrs = &self.local_addrs;
         self.store.providers(key)
             .into_iter()
@@ -1402,19 +1415,19 @@ pub enum KademliaEvent {
     }
 }
 
-
-impl From<kbucket::EntryView<kbucket::Key<PeerId>, Addresses>> for KadPeer {
-    fn from(e: kbucket::EntryView<kbucket::Key<PeerId>, Addresses>) -> KadPeer {
-        KadPeer {
-            node_id: e.node.key.into_preimage(),
-            multiaddrs: e.node.value.into_vec(),
-            connection_ty: match e.status {
-                NodeStatus::Connected => KadConnectionType::Connected,
-                NodeStatus::Disconnected => KadConnectionType::NotConnected
-            }
-        }
-    }
-}
+//
+// impl From<kbucket::EntryView<kbucket::Key<PeerId>, Addresses>> for KadPeer {
+//     fn from(e: kbucket::EntryView<kbucket::Key<PeerId>, Addresses>) -> KadPeer {
+//         KadPeer {
+//             node_id: e.node.key.into_preimage(),
+//             multiaddrs: e.node.value.into_vec(),
+//             connection_ty: match e.status {
+//                 NodeStatus::Connected => KadConnectionType::Connected,
+//                 NodeStatus::Disconnected => KadConnectionType::NotConnected
+//             }
+//         }
+//     }
+// }
 
 /// The possible outcomes of [`Kademlia::add_address`].
 pub enum RoutingUpdate {
