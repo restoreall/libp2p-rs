@@ -28,19 +28,19 @@
 pub use crate::K_VALUE;
 use super::*;
 
-
-/// The status of a node in a bucket.
-///
-/// The status of a node in a bucket together with the time of the
-/// last status change determines the position of the node in a
-/// bucket.
-#[derive(PartialEq, Eq, Debug, Copy, Clone)]
-pub enum NodeStatus {
-    /// The node is considered connected.
-    Connected,
-    /// The node is considered disconnected.
-    Disconnected
-}
+//
+// /// The status of a node in a bucket.
+// ///
+// /// The status of a node in a bucket together with the time of the
+// /// last status change determines the position of the node in a
+// /// bucket.
+// #[derive(PartialEq, Eq, Debug, Copy, Clone)]
+// pub enum NodeStatus {
+//     /// The node is considered connected.
+//     Connected,
+//     /// The node is considered disconnected.
+//     Disconnected
+// }
 
 /// A `Node` in a bucket, representing a peer participating
 /// in the Kademlia DHT together with an associated value (e.g. contact
@@ -102,17 +102,6 @@ pub enum InsertResult<TKey> {
      Full
 }
 
-/// The result of applying a pending node to a bucket, possibly
-/// replacing an existing node.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppliedPending<TKey, TVal> {
-    /// The key of the inserted pending node.
-    pub inserted: Node<TKey, TVal>,
-    /// The node that has been evicted from the bucket to make room for the
-    /// pending node, if any.
-    pub evicted: Option<Node<TKey, TVal>>
-}
-
 impl<TKey, TVal> KBucket<TKey, TVal>
 where
     TKey: Clone + AsRef<KeyBytes>,
@@ -131,25 +120,8 @@ where
     }
 
     /// Returns an iterator over the nodes in the bucket, together with their status.
-    pub fn iter(&self) -> impl Iterator<Item = (&Node<TKey, TVal>, NodeStatus)> {
-        self.nodes.iter().enumerate().map(move |(p, n)| (n, NodeStatus::Connected))
-    }
-
-    /// Updates the status of the node referred to by the given key, if it is
-    /// in the bucket.
-    pub fn update(&mut self, key: &TKey, status: NodeStatus) {
-        // Remove the node from its current position and then reinsert it
-        // with the desired status, which puts it at the end of either the
-        // prefix list of disconnected nodes or the suffix list of connected
-        // nodes (i.e. most-recently disconnected or most-recently connected,
-        // respectively).
-        if let Some((node, pos)) = self.remove(key) {
-            // Reinsert the node with the desired status.
-            match self.insert(node, status) {
-                InsertResult::Inserted => {},
-                _ => unreachable!("The node is removed before being (re)inserted.")
-            }
-        }
+    pub fn iter(&self) -> impl Iterator<Item = (&Node<TKey, TVal>)> {
+        self.nodes.iter()
     }
 
     /// Inserts a new node into the bucket with the given status.
@@ -169,7 +141,7 @@ where
     ///     i.e. as the most-recently disconnected node. If there are no connected nodes,
     ///     the new node is added as the last element of the bucket.
     ///
-    pub fn insert(&mut self, node: Node<TKey, TVal>, status: NodeStatus) -> InsertResult<TKey> {
+    pub fn insert(&mut self, node: Node<TKey, TVal>) -> InsertResult<TKey> {
         if self.nodes.is_full() {
             // TODO: replaceable
             InsertResult::Full

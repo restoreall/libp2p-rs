@@ -38,7 +38,7 @@ mod dht_proto {
     include!(concat!(env!("OUT_DIR"), "/dht.pb.rs"));
 }
 
-pub use addresses::Addresses;
+//pub use addresses::Addresses;
 //pub use behaviour::{Kademlia, KademliaBucketInserts, KademliaConfig, KademliaEvent, Quorum};
 // pub use behaviour::{
 //     QueryRef,

@@ -216,7 +216,7 @@ where
             table: self,
             buckets_iter: ClosestBucketsIter::new(distance),
             fmap: |b: &KBucket<TKey, _>| -> ArrayVec<_> {
-                b.iter().map(|(n,_)| n.key.clone()).collect()
+                b.iter().map(|n| n.key.clone()).collect()
             }
         }
     }
@@ -236,9 +236,8 @@ where
             table: self,
             buckets_iter: ClosestBucketsIter::new(distance),
             fmap: |b: &KBucket<_, TVal>| -> ArrayVec<_> {
-                b.iter().map(|(n, status)| EntryView {
-                    node: n.clone(),
-                    status
+                b.iter().map(|n| EntryView {
+                    node: n.clone()
                 }).collect()
             }
         }
@@ -258,7 +257,7 @@ where
         let mut iter = ClosestBucketsIter::new(distance).take_while(|i| i.get() != 0);
         if let Some(i) = iter.next() {
             let num_first = self.buckets[i.get()].iter()
-                .filter(|(n,_)| n.key.as_ref().distance(&local_key) <= distance)
+                .filter(|n| n.key.as_ref().distance(&local_key) <= distance)
                 .count();
             let num_rest: usize = iter.map(|i| self.buckets[i.get()].num_entries()).sum();
             num_first + num_rest
@@ -457,13 +456,12 @@ where
 
     /// Returns an iterator over the entries in the bucket.
     pub fn iter(&'a self) -> impl Iterator<Item = EntryRefView<'a, TKey, TVal>> {
-        self.bucket.iter().map(move |(n, status)| {
+        self.bucket.iter().map(move |n| {
             EntryRefView {
                 node: NodeRefView {
                     key: &n.key,
                     value: &n.value
-                },
-                status
+                }
             }
         })
     }
@@ -660,7 +658,7 @@ mod tests {
         full_bucket.pending_mut().unwrap().set_ready_at(elapsed);
 
         match table.entry(&expected_applied.inserted.key) {
-            Entry::Present(_, NodeStatus::Connected) => {}
+            Entry::Present(_) => {}
             x => panic!("Unexpected entry: {:?}", x)
         }
 

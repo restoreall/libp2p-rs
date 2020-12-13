@@ -42,9 +42,9 @@ use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg,
 use crate::control::{Control, ControlCommand};
 
 use crate::query::{QueryConfig, IterativeQuery, QueryType, PeerRecord, FixedQuery};
-use crate::kbucket::{KBucketsTable, NodeStatus};
+use crate::kbucket::KBucketsTable;
 use crate::store::RecordStore;
-use crate::{record, kbucket, Addresses, Record, KadError, ProviderRecord};
+use crate::{record, kbucket, Record, KadError, ProviderRecord};
 use crate::addresses::PeerInfo;
 
 
@@ -489,7 +489,7 @@ impl<TStore> Kademlia<TStore>
     {
         let key = kbucket::Key::new(peer.clone());
         match self.kbuckets.entry(&key) {
-            kbucket::Entry::Present(entry, _) => {
+            kbucket::Entry::Present(entry) => {
                 Some(entry.remove())
             }
             kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => {
@@ -905,22 +905,28 @@ impl<TStore> Kademlia<TStore>
     }
 */
     /// Updates the routing table with a new connection status and address of a peer.
-    fn connection_updated(&mut self, peer: PeerId, address: Option<Multiaddr>, new_status: NodeStatus) {
+    fn connection_updated(&mut self, peer: PeerId, address: Option<Multiaddr>, connected: bool) {
         let key = kbucket::Key::new(peer.clone());
         match self.kbuckets.entry(&key) {
-            kbucket::Entry::Present(mut entry, old_status) => {
-                if old_status != new_status {
-                    entry.update(new_status);
-                }
+            kbucket::Entry::Present(mut entry) => {
+                // TODO: status
+                //entry.update(new_status);
+                entry.value().set_last_used_at(Instant::now());
             },
 
             kbucket::Entry::Absent(entry) => {
                 // Only connected nodes with a known address are newly inserted.
-                if new_status != NodeStatus::Connected {
+                // TODO: status
+                // if new_status != NodeStatus::Connected {
+                //     return
+                // }
+
+                if !connected {
                     return
                 }
+
                 let info = PeerInfo::new();
-                match entry.insert(info, new_status) {
+                match entry.insert(info) {
                     kbucket::InsertResult::Inserted => {
                         // let event = KademliaEvent::RoutingUpdated {
                         //     peer: peer.clone(),
@@ -1157,7 +1163,7 @@ impl<TStore> Kademlia<TStore>
         }
 
         // TODO: figure out what it shall do
-        self.connection_updated(peer_id, None, NodeStatus::Disconnected);
+        self.connection_updated(peer_id, None, false);
     }
 
     // handle a new Kad peer is found.
@@ -1348,8 +1354,6 @@ pub enum KademliaEvent {
     RoutingUpdated {
         /// The ID of the peer that was added or updated.
         peer: PeerId,
-        /// The full list of known addresses of `peer`.
-        addresses: Addresses,
         /// The ID of the peer that was evicted from the routing table to make
         /// room for the new peer, if any.
         old_peer: Option<PeerId>,

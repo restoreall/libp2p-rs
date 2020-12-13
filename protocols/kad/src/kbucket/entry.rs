@@ -21,7 +21,7 @@
 //! The `Entry` API for quering and modifying the entries of a `KBucketsTable`
 //! representing the nodes participating in the Kademlia DHT.
 
-pub use super::bucket::{Node, NodeStatus, InsertResult, AppliedPending, K_VALUE};
+pub use super::bucket::{Node, InsertResult, K_VALUE};
 pub use super::key::*;
 
 use super::*;
@@ -30,8 +30,6 @@ use super::*;
 pub struct EntryRefView<'a, TPeerId, TVal> {
     /// The node represented by the entry.
     pub node: NodeRefView<'a, TPeerId, TVal>,
-    /// The status of the node identified by the key.
-    pub status: NodeStatus
 }
 
 /// An immutable by-reference view of a `Node`.
@@ -50,8 +48,7 @@ impl<TKey, TVal> EntryRefView<'_, TKey, TVal> {
             node: Node {
                 key: self.node.key.clone(),
                 value: self.node.value.clone()
-            },
-            status: self.status
+            }
         }
     }
 }
@@ -62,8 +59,6 @@ impl<TKey, TVal> EntryRefView<'_, TKey, TVal> {
 pub struct EntryView<TKey, TVal> {
     /// The node represented by the entry.
     pub node: Node<TKey, TVal>,
-    /// The status of the node.
-    pub status: NodeStatus
 }
 
 impl<TKey: AsRef<KeyBytes>, TVal> AsRef<KeyBytes> for EntryView<TKey, TVal> {
@@ -76,7 +71,7 @@ impl<TKey: AsRef<KeyBytes>, TVal> AsRef<KeyBytes> for EntryView<TKey, TVal> {
 #[derive(Debug)]
 pub enum Entry<'a, TPeerId, TVal> {
     /// The entry is present in a bucket.
-    Present(PresentEntry<'a, TPeerId, TVal>, NodeStatus),
+    Present(PresentEntry<'a, TPeerId, TVal>),
     /// The entry is absent and may be inserted.
     Absent(AbsentEntry<'a, TPeerId, TVal>),
     /// The entry represents the local node.
@@ -99,9 +94,7 @@ where
     /// Creates a new `Entry` for a `Key`, encapsulating access to a bucket.
     pub(super) fn new(bucket: &'a mut KBucket<TKey, TVal>, key: &'a TKey) -> Self {
         if let Some(pos) = bucket.position(key) {
-            // TODO: status
-            let status = NodeStatus::Connected;
-            Entry::Present(PresentEntry::new(bucket, key), status)
+            Entry::Present(PresentEntry::new(bucket, key))
         } else {
             Entry::Absent(AbsentEntry::new(bucket, key))
         }
@@ -113,12 +106,11 @@ where
     /// pending insertion into a bucket.
     pub fn view(&'a mut self) -> Option<EntryRefView<'a, TKey, TVal>> {
         match self {
-            Entry::Present(entry, status) => Some(EntryRefView {
+            Entry::Present(entry) => Some(EntryRefView {
                 node: NodeRefView {
                     key: entry.0.key,
                     value: entry.value()
                 },
-                status: *status
             }),
             _ => None
         }
@@ -131,7 +123,7 @@ where
     /// the `KBucketsTable` referring to the local node.
     pub fn key(&self) -> Option<&TKey> {
         match self {
-            Entry::Present(entry, _) => Some(entry.key()),
+            Entry::Present(entry) => Some(entry.key()),
             Entry::Absent(entry) => Some(entry.key()),
             Entry::SelfEntry => None,
         }
@@ -143,7 +135,7 @@ where
     /// local node.
     pub fn value(&mut self) -> Option<&mut TVal> {
         match self {
-            Entry::Present(entry, _) => Some(entry.value()),
+            Entry::Present(entry) => Some(entry.value()),
             Entry::Absent(_) => None,
             Entry::SelfEntry => None,
         }
@@ -176,19 +168,13 @@ where
             .value
     }
 
-    /// Sets the status of the entry to `NodeStatus::Disconnected`.
-    pub fn update(self, status: NodeStatus) -> Self {
-        self.0.bucket.update(self.0.key, status);
-        Self::new(self.0.bucket, self.0.key)
-    }
-
     /// Removes the entry from the bucket.
     pub fn remove(self) -> EntryView<TKey, TVal> {
         let (node, _pos) = self.0.bucket
             .remove(&self.0.key)
             .expect("We can only build a PresentEntry if the entry is in the bucket; QED");
         // TODO: status
-        EntryView { node, status: NodeStatus::Connected }
+        EntryView { node }
     }
 }
 
@@ -211,11 +197,11 @@ where
     }
 
     /// Attempts to insert the entry into a bucket.
-    pub fn insert(self, value: TVal, status: NodeStatus) -> InsertResult<TKey> {
+    pub fn insert(self, value: TVal) -> InsertResult<TKey> {
         self.0.bucket.insert(Node {
             key: self.0.key.clone(),
             value
-        }, status)
+        })
     }
 }
 
