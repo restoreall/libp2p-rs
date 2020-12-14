@@ -93,7 +93,7 @@ where
 {
     /// Creates a new `Entry` for a `Key`, encapsulating access to a bucket.
     pub(super) fn new(bucket: &'a mut KBucket<TKey, TVal>, key: &'a TKey) -> Self {
-        if let Some(pos) = bucket.position(key) {
+        if let Some(_) = bucket.position(key) {
             Entry::Present(PresentEntry::new(bucket, key))
         } else {
             Entry::Absent(AbsentEntry::new(bucket, key))
@@ -173,7 +173,6 @@ where
         let (node, _pos) = self.0.bucket
             .remove(&self.0.key)
             .expect("We can only build a PresentEntry if the entry is in the bucket; QED");
-        // TODO: status
         EntryView { node }
     }
 }

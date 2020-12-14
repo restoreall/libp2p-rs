@@ -189,6 +189,12 @@ impl Control {
         self.peer_store.get_addr(peer_id)
     }
 
+    /// Get multiaddr of a peer.
+    pub fn get_addrs_vec(&self, peer_id: &PeerId) -> Option<Vec<Multiaddr>> {
+        let r = self.peer_store.get_addr(peer_id);
+        r.map(|r| r.into_iter().map(|r| r.into_maddr()).collect())
+    }
+
     /// Add a address to address_book by peer_id, if exists, update rtt.
     pub fn add_addr(&self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration) {
         self.peer_store.add_addr(peer_id, addr, ttl)

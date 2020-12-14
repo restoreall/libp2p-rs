@@ -100,7 +100,7 @@ where
     TVal: Clone
 {
     /// Creates a new `KBucket` with the given timeout for pending entries.
-    pub fn new(pending_timeout: Duration) -> Self {
+    pub fn new() -> Self {
         KBucket {
             nodes: ArrayVec::new(),
         }
@@ -112,7 +112,7 @@ where
     }
 
     /// Returns an iterator over the nodes in the bucket, together with their status.
-    pub fn iter(&self) -> impl Iterator<Item = (&Node<TKey, TVal>)> {
+    pub fn iter(&self) -> impl Iterator<Item = &Node<TKey, TVal>> {
         self.nodes.iter()
     }
 
