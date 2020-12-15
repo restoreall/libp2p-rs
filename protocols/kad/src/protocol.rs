@@ -814,10 +814,18 @@ mod tests {
     }*/
 }
 
+#[derive(Debug)]
+pub enum BootstrapStage {
+    SelfQueryDone,
+    Completed,
+}
 
 /// Event produced by the Kademlia handler.
 #[derive(Debug)]
 pub enum ProtocolEvent {
+    /// Bootstrap state.
+    Bootstrap(BootstrapStage),
+
     /// A new connection from peer_id is opened.
     ///
     /// This notification comes from Protocol Notifiee trait.

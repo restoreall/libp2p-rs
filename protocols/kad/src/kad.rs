@@ -38,7 +38,7 @@ use async_std::task::JoinHandle;
 use libp2prs_core::{PeerId, Multiaddr};
 use libp2prs_swarm::Control as SwarmControl;
 
-use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger};
+use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger, BootstrapStage};
 use crate::control::{Control, ControlCommand};
 
 use crate::query::{QueryConfig, IterativeQuery, QueryType, PeerRecord, FixedQuery};
@@ -794,8 +794,13 @@ impl<TStore> Kademlia<TStore>
     fn bootstrap(&mut self) {
         let local_key = self.kbuckets.self_key().clone();
         let key = local_key.into_preimage().into_bytes();
+        let mut poster = self.get_poster();
 
-        self.get_closest_peers(key.into(), |_| {});
+        self.get_closest_peers(key.into(), |_| {
+            task::spawn(async {
+                //let _ = poster.post(ProtocolEvent::KadRequest {}).await;
+            });
+        });
     }
 
     /// Performs publishing as a provider of a value for the given key.
@@ -1201,6 +1206,10 @@ impl<TStore> Kademlia<TStore>
                 self.handle_provider_cleanup();
                 Ok(())
             }
+            Some(ProtocolEvent::Bootstrap(stage)) => {
+                self.handle_bootstrap_stage(stage);
+                Ok(())
+            }
             None => Err(KadError::Closed(1)),
         }
     }
@@ -1284,6 +1293,18 @@ impl<TStore> Kademlia<TStore>
         provider_records.into_iter().for_each(|r|{
             self.store.remove_provider(&r.key, &r.provider);
         });
+    }
+
+    fn handle_bootstrap_stage(&mut self, stage: BootstrapStage) {
+        match stage {
+            BootstrapStage::SelfQueryDone => {
+                // we have done self-querying, then run the random walk for the further buckets
+                //self.kbuckets
+
+            }
+            BootstrapStage::Completed => {
+            }
+        }
     }
 
     // Process publish or subscribe command.
