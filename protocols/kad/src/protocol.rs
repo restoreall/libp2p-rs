@@ -376,11 +376,11 @@ impl KadMessenger {
         }
     }
 
-    pub(crate) async fn send_add_provider(&mut self, provider_record: ProviderRecord) -> Result<(), KadError>
+    pub(crate) async fn send_add_provider(&mut self, provider_record: ProviderRecord, addresses: Vec<Multiaddr>) -> Result<(), KadError>
     {
         let provider = KadPeer {
             node_id: provider_record.provider,
-            multiaddrs: provider_record.addresses,
+            multiaddrs: addresses,
             connection_ty: KadConnectionType::Connected,
         };
 

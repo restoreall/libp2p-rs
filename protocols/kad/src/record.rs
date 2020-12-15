@@ -28,7 +28,7 @@ use std::hash::{Hash, Hasher};
 use bytes::Bytes;
 use multihash::Multihash;
 
-use libp2prs_core::{PeerId, Multiaddr};
+use libp2prs_core::PeerId;
 
 /// The (opaque) key of a record.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -113,8 +113,6 @@ pub struct ProviderRecord {
     pub provider: PeerId,
     /// The expiration time as measured by a local, monotonic clock.
     pub expires: Option<Instant>,
-    /// The known addresses that the provider may be listening on.
-    pub addresses: Vec<Multiaddr>
 }
 
 impl Hash for ProviderRecord {
@@ -126,15 +124,14 @@ impl Hash for ProviderRecord {
 
 impl ProviderRecord {
     /// Creates a new provider record for insertion into a `RecordStore`.
-    pub fn new<K>(key: K, provider: PeerId, addresses: Vec<Multiaddr>) -> Self
+    pub fn new<K>(key: K, provider: PeerId, expires: Option<Instant>) -> Self
     where
         K: Into<Key>
     {
         ProviderRecord {
             key: key.into(),
             provider,
-            expires: None,
-            addresses,
+            expires,
         }
     }
 

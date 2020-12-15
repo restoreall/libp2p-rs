@@ -18,9 +18,6 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::fmt;
-use smallvec::SmallVec;
-use libp2prs_core::Multiaddr;
 use std::time::Instant;
 
 /// The information of a peer in Kad routing table.

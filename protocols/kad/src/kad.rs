@@ -777,14 +777,11 @@ impl<TStore> Kademlia<TStore>
         where
             F: FnOnce(Result<()>) + Send + 'static
     {
-        // Note: We store our own provider records locally without local addresses
-        // to avoid redundant storage and outdated addresses. Instead these are
-        // acquired on demand when returning a `ProviderRecord` for the local node.
-        let local_addrs = Vec::new();
         let provider = ProviderRecord::new(
             key.clone(),
             self.kbuckets.self_key().preimage().clone(),
-            local_addrs);
+            None
+        );
         if let Err(e) = self.store.add_provider(provider.clone()) {
             f(Err(e));
             return;
@@ -792,7 +789,7 @@ impl<TStore> Kademlia<TStore>
         let config = self.query_config.clone();
         let messengers = self.messengers.clone().expect("must be Some");
 
-        //
+        let addresses = self.local_addrs.iter().cloned().collect::<Vec<_>>();
 
         // initiate the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(key, move |peers| {
@@ -800,25 +797,10 @@ impl<TStore> Kademlia<TStore>
                 f(Err(e));
             } else {
                 let peers = peers.unwrap().into_iter().map(KadPeer::into).collect::<Vec<_>>();
-                let fixed_query = FixedQuery::new(QueryType::AddProvider {provider}, messengers, config, peers);
+                let fixed_query = FixedQuery::new(QueryType::AddProvider { provider, addresses }, messengers, config, peers);
                 fixed_query.run(f);
             }
         });
-        // let target = kbucket::Key::new(key.clone());
-        // let peers = self.kbuckets.closest_keys(&target);
-        // let context = AddProviderContext::Publish;
-        // let info = QueryInfo::AddProvider {
-        //     context,
-        //     key,
-        //     //phase: AddProviderPhase::GetClosestPeers
-        //     // TODO
-        //     provider_id: PeerId::random(),
-        //     external_addresses: vec![],
-        //     get_closest_peers_stats: QueryStats::empty()
-        // };
-        // let inner = QueryInner::new(info);
-        // let id = self.queries.add_iter_closest(target.clone(), peers, inner);
-        // Ok(id)
     }
 
     /// Stops the local node from announcing that it is a provider for the given key.
@@ -849,7 +831,10 @@ impl<TStore> Kademlia<TStore>
                     } else {
                         KadConnectionType::NotConnected
                     };
-                    let multiaddrs = swarm.get_addrs_vec(&node_id).unwrap_or(vec!());
+                    let multiaddrs = swarm.get_addrs_vec(&node_id).unwrap_or(vec![]);
+                    // Note: here might be a possibility that multiaddrs is empty, if the peerstore doesn't have
+                    // the address info for some reason(BUG?). Therefore, we'll send out a Kad peer without addresses.
+                    // Shall we or shall we not???
                     KadPeer {
                         node_id,
                         multiaddrs,
@@ -869,37 +854,31 @@ impl<TStore> Kademlia<TStore>
         self.store.providers(key)
             .into_iter()
             .filter_map(move |p|
-                if source.map_or(true, |pid|pid != &p.provider) {
+                if source.map_or(true, |id|id != &p.provider) {
                     let node_id = p.provider;
-                    let multiaddrs = p.addresses;
                     let connection_ty = if connected.contains(&node_id) {
                         KadConnectionType::Connected
                     } else {
                         KadConnectionType::NotConnected
                     };
-                    if multiaddrs.is_empty() {
-                        // The provider is either the local node and we fill in
-                        // the local addresses on demand, or it is a legacy
-                        // provider record without addresses, in which case we
-                        // try to find addresses in the routing table, as was
-                        // done before provider records were stored along with
-                        // their addresses.
-                        if &node_id == kbuckets.self_key().preimage() {
-                            Some(local_addrs.iter().cloned().collect::<Vec<_>>())
-                        } else {
-                            let key = kbucket::Key::new(node_id.clone());
-                            swarm.get_addrs_vec(&node_id)
-                        }
+                    // The provider is either the local node and we fill in
+                    // the local addresses on demand, or it is a legacy
+                    // provider record without addresses, in which case we
+                    // try to find addresses in the routing table, as was
+                    // done before provider records were stored along with
+                    // their addresses.
+                    // TODO: local_addrs
+                    let multiaddrs = if &node_id == kbuckets.self_key().preimage() {
+                        Some(local_addrs.iter().cloned().collect::<Vec<_>>())
                     } else {
-                        Some(multiaddrs)
-                    }
-                        .map(|multiaddrs| {
-                            KadPeer {
-                                node_id,
-                                multiaddrs,
-                                connection_ty,
-                            }
-                        })
+                        swarm.get_addrs_vec(&node_id)
+                    }.unwrap_or(vec![]);
+
+                    Some(KadPeer {
+                        node_id,
+                        multiaddrs,
+                        connection_ty,
+                    })
                 } else {
                     None
                 })
@@ -935,11 +914,6 @@ impl<TStore> Kademlia<TStore>
         self.queries.add_iter_closest(target.clone(), peers, inner);
     }
 */
-    /// Updates the routing table with a new connection status and address of a peer.
-    fn connection_updated(&mut self, peer: PeerId, address: Option<Multiaddr>, connected: bool) {
-
-    }
-
     /// Processes a record received from a peer.
     fn handle_put_record(
         &mut self,
@@ -1007,14 +981,10 @@ impl<TStore> Kademlia<TStore>
     fn handle_add_provider(&mut self, key: record::Key, provider: KadPeer) {
         if &provider.node_id != self.kbuckets.self_key().preimage() {
             // add provider's addresses to peerstore
-            self.swarm.as_ref().expect("must be Some").add_addrs(&provider.node_id, provider.multiaddrs.clone(), Duration::from_secs(1));
+            self.swarm.as_ref().expect("must be Some").add_addrs(&provider.node_id, provider.multiaddrs, Duration::from_secs(1));
 
-            let record = ProviderRecord {
-                key,
-                provider: provider.node_id,
-                expires: self.provider_record_ttl.map(|ttl| Instant::now() + ttl),
-                addresses: provider.multiaddrs,
-            };
+            let record = ProviderRecord::new(key, provider.node_id,
+                                             self.provider_record_ttl.map(|ttl| Instant::now() + ttl));
             if let Err(e) = self.store.add_provider(record) {
                 log::info!("Provider record not stored: {:?}", e);
             }
