@@ -195,8 +195,13 @@ where
         self.0.key
     }
 
+    /// Returns the reference of the KBucket.
+    pub fn bucket(&mut self) -> &mut KBucket<TKey, TVal> {
+        self.0.bucket
+    }
+
     /// Attempts to insert the entry into a bucket.
-    pub fn insert(self, value: TVal) -> InsertResult {
+    pub fn insert(&mut self, value: TVal) -> bool {
         self.0.bucket.insert(Node {
             key: self.0.key.clone(),
             value

@@ -85,6 +85,9 @@ pub struct Kademlia<TStore> {
     /// How long to keep connections alive when they're idle.
     connection_idle_timeout: Duration,
 
+    /// How long to ping/check a Kad peer since last time we talk to them.
+    check_kad_peer_interval: Duration,
+
     // /// Queued events to return when the behaviour is being polled.
     // queued_events: VecDeque<NetworkBehaviourAction<KademliaHandlerIn<QueryId>, KademliaEvent>>,
 
@@ -118,7 +121,6 @@ pub struct Kademlia<TStore> {
 /// The configuration is consumed by [`Kademlia::new`].
 #[derive(Debug, Clone)]
 pub struct KademliaConfig {
-    kbucket_pending_timeout: Duration,
     query_config: QueryConfig,
     protocol_config: KademliaProtocolConfig,
     cleanup_interval: Duration,
@@ -128,12 +130,25 @@ pub struct KademliaConfig {
     provider_record_ttl: Option<Duration>,
     provider_publication_interval: Option<Duration>,
     connection_idle_timeout: Duration,
+    check_kad_peer_interval: Duration,
 }
 
 impl Default for KademliaConfig {
     fn default() -> Self {
+        let check_kad_peer_interval = Duration::from_secs(10 * 60);
+        // TODO: calculate check_kad_peer_interval according to go-libp2p
+        // // The threshold is calculated based on the expected amount of time that should pass before we
+        // // query a peer as part of our refresh cycle.
+        // // To grok the Math Wizardy that produced these exact equations, please be patient as a document explaining it will
+        // // be published soon.
+        // if cfg.concurrency < cfg.bucketSize { // (alpha < K)
+        //     l1 := math.Log(float64(1) / float64(cfg.bucketSize))                              //(Log(1/K))
+        //     l2 := math.Log(float64(1) - (float64(cfg.concurrency) / float64(cfg.bucketSize))) // Log(1 - (alpha / K))
+        //     maxLastSuccessfulOutboundThreshold = time.Duration(l1 / l2 * float64(cfg.routingTable.refreshInterval))
+        // } else {
+        //     maxLastSuccessfulOutboundThreshold = cfg.routingTable.refreshInterval
+        // }
         KademliaConfig {
-            kbucket_pending_timeout: Duration::from_secs(60),
             query_config: QueryConfig::default(),
             protocol_config: Default::default(),
             cleanup_interval: Duration::from_secs(24 * 60 * 60),
@@ -143,6 +158,7 @@ impl Default for KademliaConfig {
             provider_publication_interval: Some(Duration::from_secs(12 * 60 * 60)),
             provider_record_ttl: Some(Duration::from_secs(24 * 60 * 60)),
             connection_idle_timeout: Duration::from_secs(10),
+            check_kad_peer_interval
         }
     }
 }
@@ -353,7 +369,7 @@ impl<TStore> Kademlia<TStore>
             event_tx,
             control_tx,
             control_rx,
-            kbuckets: KBucketsTable::new(local_key, config.kbucket_pending_timeout),
+            kbuckets: KBucketsTable::new(local_key),
             protocol_config: config.protocol_config,
             query_config: config.query_config,
             messengers: None,
@@ -363,6 +379,7 @@ impl<TStore> Kademlia<TStore>
             record_ttl: config.record_ttl,
             provider_record_ttl: config.provider_record_ttl,
             connection_idle_timeout: config.connection_idle_timeout,
+            check_kad_peer_interval: config.check_kad_peer_interval,
             local_addrs: FnvHashSet::default(),
         }
     }
@@ -482,27 +499,54 @@ impl<TStore> Kademlia<TStore>
 */
     /// Tries to add a peer into the routing table.
     ///
-    /// 'queried' means a Kad query is just done with the peer.
+    /// 1. the peer is already in RT:
+    ///    1.1. if the peer is that either we queried it or it queried us, we update the aliveness
+    ///         to the current instant.
+    ///    1.2  do nothing
+    /// 2. the peers is not in RT
+    ///    2.1 if the bucket to which the peer belongs is full, we try to replace an existing peer
+    ///        whose aliveness is older than the current time by the maximum allowed check_interval,
+    ///        with the new peer.
+    ///    2.2 if there is no such peer exists in that bucket, do nothing -> ignore adding peer
     fn try_add_peer(&mut self, peer: PeerId, queried: bool) {
         log::trace!("trying add a peer to routing table: {}", peer);
 
+        let timeout = self.check_kad_peer_interval;
+        let now = Instant::now();
         let key = kbucket::Key::new(peer.clone());
         match self.kbuckets.entry(&key) {
             kbucket::Entry::Present(mut entry) => {
-                // already in RT, update the value directly
-                entry.value().set_last_used_at(Instant::now());
+                // already in RT, update the node's aliveness if queried is true
+                if queried {
+                    entry.value().set_aliveness(Instant::now());
+                }
             },
-            kbucket::Entry::Absent(entry) => {
-                let info = PeerInfo::new();
-                match entry.insert(info) {
-                    kbucket::InsertResult::Inserted => {
-                        log::trace!("Peer added to routing table: {}", peer);
-                    },
-                    kbucket::InsertResult::Full => {
-                        // TODO: try replacing an 'old' peer
-                        //
-                        log::debug!("Bucket full. Peer not added to routing table: {}", peer);
-                    },
+            kbucket::Entry::Absent(mut entry) => {
+                let info = PeerInfo::new(queried);
+                if entry.insert(info.clone()) {
+                    log::trace!("Peer added to routing table: {} {:?}", peer, info);
+                } else {
+                    log::debug!("Bucket full, trying to replace an old node for {}", peer);
+                    // try replacing an 'old' peer
+                    let bucket = entry.bucket();
+                    let candidate = bucket.iter().filter(|n| {
+                        n.value.is_replaceable() && n.value.get_aliveness().map_or(true, |a|{
+                            now.duration_since(a) > timeout
+                        })
+                    })
+                        .min_by(|x, y| {
+                       x.value.get_aliveness().cmp(&y.value.get_aliveness())
+                    });
+
+                    if let Some(candidate) = candidate {
+                        let key = candidate.key.clone();
+                        let evicted = bucket.remove(&key);
+                        log::debug!("Bucket full. Peer added to routing table: {} to replace {:?}", peer, evicted);
+                        // now try to insert the value again
+                        let _ = entry.insert(info);
+                    } else {
+                        log::debug!("Bucket full, and can't find an replaced node, give up {}", peer);
+                    }
                 }
             },
             _ => {}
@@ -513,7 +557,7 @@ impl<TStore> Kademlia<TStore>
     ///
     /// Returns `None` if the peer was not in the routing table,
     /// not even pending insertion.
-    pub fn try_remove_peer(&mut self, peer: PeerId)
+    fn try_remove_peer(&mut self, peer: PeerId)
                        -> Option<kbucket::EntryView<kbucket::Key<PeerId>, PeerInfo>>
     {
         let key = kbucket::Key::new(peer);

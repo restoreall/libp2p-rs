@@ -23,11 +23,8 @@ use std::time::Instant;
 /// The information of a peer in Kad routing table.
 #[derive(Clone, Debug)]
 pub struct PeerInfo {
-    /// LastUsefulAt is the time instant at which the peer was last "useful" to us.
-    last_used_at: Instant,
-
-    /// The time instant at which we last got a successful query response from the peer.
-    last_query_at: Instant,
+    /// The time instant at which we talk to the remote peer.
+    aliveness: Option<Instant>,
 
     /// The time this peer was added to the routing table.
     added_at: Instant,
@@ -37,20 +34,23 @@ pub struct PeerInfo {
 }
 
 impl PeerInfo {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(aliveness: bool) -> Self {
         Self {
-            last_used_at: Instant::now(),
-            last_query_at: Instant::now(),
+            aliveness: if aliveness { Some(Instant::now()) } else { None },
             added_at: Instant::now(),
-            replaceable: false
+            replaceable: true
         }
     }
 
-    pub(crate) fn set_last_query_at(mut self, last_query: Instant) {
-        self.last_query_at = last_query;
+    pub(crate) fn is_replaceable(&self) -> bool {
+        self.replaceable
     }
 
-    pub(crate) fn set_last_used_at(&mut self, last_used: Instant) {
-        self.last_used_at = last_used;
+    pub(crate) fn set_aliveness(&mut self, aliveness: Instant) {
+        self.aliveness = Some(aliveness);
+    }
+
+    pub(crate) fn get_aliveness(&self) -> Option<Instant> {
+        self.aliveness
     }
 }

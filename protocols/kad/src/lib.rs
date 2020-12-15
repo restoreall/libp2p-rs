@@ -208,23 +208,4 @@ impl From<SwarmError> for KadError {
         KadError::Swarm(err)
     }
 }
-//
-// impl From<TransportError> for KadError {
-//     fn from(err: TransportError) -> Self {
-//         KadError::Transport(err)
-//     }
-// }
-//
-// impl From<mpsc::SendError> for KadError {
-//     // TODO: make a error catelog for SendError
-//     fn from(_: mpsc::SendError) -> Self {
-//         KadError::Internal
-//     }
-// }
-//
-// impl From<oneshot::Canceled> for KadError {
-//     // TODO: make a error catelog for Canceled
-//     fn from(_: oneshot::Canceled) -> Self {
-//         KadError::Internal
-//     }
-// }
+

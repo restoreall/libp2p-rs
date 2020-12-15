@@ -72,7 +72,6 @@ mod key;
 
 pub use entry::*;
 
-use std::time::Duration;
 use arrayvec::{self, ArrayVec};
 use bucket::KBucket;
 
@@ -148,8 +147,7 @@ where
     /// The given `pending_timeout` specifies the duration after creation of
     /// a [`PendingEntry`] after which it becomes eligible for insertion into
     /// a full bucket, replacing the least-recently (dis)connected node.
-    // TODO: pending_timeout
-    pub fn new(local_key: TKey, pending_timeout: Duration) -> Self {
+    pub fn new(local_key: TKey) -> Self {
         KBucketsTable {
             local_key,
             buckets: (0 .. NUM_BUCKETS).map(|_| KBucket::new()).collect(),
