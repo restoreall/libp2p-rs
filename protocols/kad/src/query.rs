@@ -743,7 +743,7 @@ mod tests {
         let peer = PeerId::random();
         let peer_cloned = peer.clone();
 
-        let mut closest_peers = ClosestPeers::new(peer.into_bytes().into());
+        let mut closest_peers = ClosestPeers::new(peer.into());
 
         let kad_peer = KadPeer {
             node_id: peer_cloned,

@@ -385,7 +385,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     // Returns a copied instance of Kad poster.
-    fn get_poster(&self) -> KadPoster {
+    fn poster(&self) -> KadPoster {
         KadPoster::new(self.event_tx.clone())
     }
 
@@ -605,7 +605,7 @@ impl<TStore> Kademlia<TStore>
                                         self.swarm.clone().expect("must be Some"),
                                         self.messengers.clone().expect("must be Some"),
                                         local_id, self.query_config.clone(),
-                                        seeds, self.get_poster());
+                                        seeds, self.poster());
 
         query
     }
@@ -793,12 +793,12 @@ impl<TStore> Kademlia<TStore>
     /// > See [`Kademlia::add_address`].
     fn bootstrap(&mut self) {
         let local_key = self.kbuckets.self_key().clone();
-        let key = local_key.into_preimage().into_bytes();
-        let mut poster = self.get_poster();
+        let key = local_key.into_preimage();
+        let mut poster = self.poster();
 
         self.get_closest_peers(key.into(), |_| {
-            task::spawn(async {
-                //let _ = poster.post(ProtocolEvent::KadRequest {}).await;
+            task::spawn(async move {
+                let _ = poster.post(ProtocolEvent::Bootstrap(BootstrapStage::SelfQueryDone)).await;
             });
         });
     }
@@ -1042,7 +1042,7 @@ impl<TStore> Kademlia<TStore>
 
     /// Get the protocol handler of Kademlia, swarm will call "handle" func after stream negotiation.
     pub fn handler(&self) -> KadProtocolHandler {
-        KadProtocolHandler::new(self.protocol_config.clone(), self.get_poster())
+        KadProtocolHandler::new(self.protocol_config.clone(), self.poster())
     }
     /// Get the controller of Kademlia, which can be used to manipulate the Kad-DHT.
     pub fn control(&self) -> Control {
@@ -1059,7 +1059,7 @@ impl<TStore> Kademlia<TStore>
         // start timer task, which would generate ProtocolEvent::Timer to kad main loop
         log::info!("starting provider timer task...");
         let interval = self.cleanup_interval;
-        let mut poster = self.get_poster();
+        let mut poster = self.poster();
         let h = task::spawn(async move {
             loop {
                 task::sleep(interval).await;
@@ -1298,11 +1298,54 @@ impl<TStore> Kademlia<TStore>
     fn handle_bootstrap_stage(&mut self, stage: BootstrapStage) {
         match stage {
             BootstrapStage::SelfQueryDone => {
-                // we have done self-querying, then run the random walk for the further buckets
-                //self.kbuckets
+                log::debug!("bootstrap: self-query done, proceed with random walk");
 
+                let self_key = self.kbuckets.self_key().clone();
+                // The lookup for the local key finished. To complete the bootstrap process,
+                // a bucket refresh should be performed for every bucket farther away than
+                // the first non-empty bucket (which are most likely no more than the last
+                // few, i.e. farthest, buckets).
+                let peers = self.kbuckets.iter()
+                    .skip_while(|b| b.is_empty())
+                    .skip(1) // Skip the bucket with the closest neighbour.
+                    .map(|b| {
+                        // Try to find a key that falls into the bucket. While such keys can
+                        // be generated fully deterministically, the current libp2p kademlia
+                        // wire protocol requires transmission of the preimages of the actual
+                        // keys in the DHT keyspace, hence for now this is just a "best effort"
+                        // to find a key that hashes into a specific bucket. The probabilities
+                        // of finding a key in the bucket `b` with as most 16 trials are as
+                        // follows:
+                        //
+                        // Pr(bucket-255) = 1 - (1/2)^16   ~= 1
+                        // Pr(bucket-254) = 1 - (3/4)^16   ~= 1
+                        // Pr(bucket-253) = 1 - (7/8)^16   ~= 0.88
+                        // Pr(bucket-252) = 1 - (15/16)^16 ~= 0.64
+                        // ...
+                        let mut target = kbucket::Key::new(PeerId::random());
+                        for _ in 0 .. 16 {
+                            let d = self_key.distance(&target);
+                            if b.contains(&d) {
+                                break;
+                            }
+                            target = kbucket::Key::new(PeerId::random());
+                        }
+                        target
+                    }).collect::<Vec<_>>();
+
+                let mut control = self.control();
+                let mut poster = self.poster();
+                // start a separate task to do walking random Ids
+                task::spawn(async move {
+                    for peer in peers {
+                        log::debug!("bootstrap: walk random node for {:?}", peer);
+                        let _= control.lookup(peer.into_preimage().into()).await;
+                    }
+                    let _ = poster.post(ProtocolEvent::Bootstrap(BootstrapStage::Completed)).await;
+                });
             }
             BootstrapStage::Completed => {
+                log::info!("bootstrap: finished");
             }
         }
     }
@@ -1316,7 +1359,7 @@ impl<TStore> Kademlia<TStore>
                 });
             }
             Some(ControlCommand::FindPeer(peer_id, reply)) => {
-                self.find_peer(peer_id.into_bytes().into(), |r| {
+                self.find_peer(peer_id.into(), |r| {
                     let _ = reply.send(r);
                 });
             }
@@ -1415,19 +1458,6 @@ pub enum KademliaEvent {
     }
 }
 
-//
-// impl From<kbucket::EntryView<kbucket::Key<PeerId>, Addresses>> for KadPeer {
-//     fn from(e: kbucket::EntryView<kbucket::Key<PeerId>, Addresses>) -> KadPeer {
-//         KadPeer {
-//             node_id: e.node.key.into_preimage(),
-//             multiaddrs: e.node.value.into_vec(),
-//             connection_ty: match e.status {
-//                 NodeStatus::Connected => KadConnectionType::Connected,
-//                 NodeStatus::Disconnected => KadConnectionType::NotConnected
-//             }
-//         }
-//     }
-// }
 
 /// The possible outcomes of [`Kademlia::add_address`].
 pub enum RoutingUpdate {
@@ -1462,7 +1492,7 @@ impl MessengerManager {
         Self { swarm, config, cache: Arc::new(Default::default()) }
     }
 
-    pub(crate) fn get_swarm(&mut self) -> &mut SwarmControl {
+    pub(crate) fn swarm(&mut self) -> &mut SwarmControl {
         &mut self.swarm
     }
 

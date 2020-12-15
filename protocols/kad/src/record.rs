@@ -70,6 +70,12 @@ impl From<Multihash> for Key {
     }
 }
 
+impl From<PeerId> for Key {
+    fn from(m: PeerId) -> Key {
+        Key::from(m.into_bytes())
+    }
+}
+
 /// A record stored in the DHT.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Record {
