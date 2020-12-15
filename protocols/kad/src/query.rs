@@ -25,7 +25,8 @@ use futures::{StreamExt, SinkExt};
 
 use async_std::task;
 
-use libp2prs_core::PeerId;
+use libp2prs_core::{PeerId, Multiaddr};
+use libp2prs_swarm::Control as SwarmControl;
 
 use crate::{ALPHA_VALUE, K_VALUE, BETA_VALUE, KadError, record};
 use crate::kbucket::{Key, Distance};
@@ -128,8 +129,8 @@ impl FixedQuery {
                                     messengers.put_messenger(ms).await;
                                 }
                             }
-                            QueryType::AddProvider { provider } => {
-                                if ms.send_add_provider(provider).await.is_ok() {
+                            QueryType::AddProvider { provider, addresses } => {
+                                if ms.send_add_provider(provider, addresses).await.is_ok() {
                                     messengers.put_messenger(ms).await;
                                 }
                             }
@@ -374,6 +375,7 @@ pub enum QueryType {
     },
     AddProvider {
         provider: record::ProviderRecord,
+        addresses: Vec<Multiaddr>
     },
     PutRecord {
         record: record::Record,
@@ -393,6 +395,8 @@ pub enum QueryType {
 pub(crate) struct IterativeQuery {
     /// The target to be queried.
     key: record::Key,
+    /// The Swarm controller is used to communicate with Swarm.
+    swarm: SwarmControl,
     /// The Messenger is used to send/receive Kad messages.
     messengers: MessengerManager,
     /// The query type to be executed.
@@ -409,13 +413,15 @@ pub(crate) struct IterativeQuery {
 
 impl IterativeQuery
 {
-    pub(crate) fn new(query_type: QueryType, key: record::Key, messenger: MessengerManager,
+    pub(crate) fn new(query_type: QueryType, key: record::Key,
+                      swarm: SwarmControl, messengers: MessengerManager,
                       local_id: PeerId, config: QueryConfig, seeds: Vec<Key<PeerId>>,
                       poster: KadPoster) -> Self {
         Self {
             query_type,
             key,
-            messengers: messenger,
+            swarm,
+            messengers,
             local_id,
             config,
             seeds,
@@ -490,10 +496,17 @@ impl IterativeQuery
                         log::info!("successful query from {:}, closer {:?}, {:?}", source, closer, duration);
                         // note we don't add myself
                         closer.retain(|p| p.node_id != me.local_id.clone());
+
+                        // update the PeerStore for the multiaddr, add all multiaddr of Closer peers
+                        // to PeerStore
+                        for peer in closer.iter() {
+                            me.swarm.add_addrs(&peer.node_id, peer.multiaddrs.clone(), Duration::from_secs(1));
+                        }
+
                         closest_peers.add_peers(closer);
                         closest_peers.set_peer_state(&source, PeerState::Succeeded);
 
-                        // TODO: signal the k-buckets for new peer found
+                        // signal the k-buckets for new peer found
                         let _ = me.poster.post(ProtocolEvent::KadPeerFound(source.clone(), true)).await;
 
                         // handle different query type, check if we are done querying
@@ -511,6 +524,12 @@ impl IterativeQuery
                                 // update providers
                                 if let Some(provider) = provider {
                                     log::trace!("GetProviders: provider found {:?} key={:?}", provider, me.key);
+
+                                    // update the PeerStore for the multiaddr, add all multiaddr of Closer peers
+                                    // to PeerStore
+                                    for peer in provider.iter() {
+                                        me.swarm.add_addrs(&peer.node_id, peer.multiaddrs.clone(), Duration::from_secs(1));
+                                    }
 
                                     if !provider.is_empty() {
                                         // append or create the query_results.providers
@@ -569,7 +588,7 @@ impl IterativeQuery
                         // set to PeerState::Unreachable
                         log::info!("unreachable peer {:?} detected", peer);
                         closest_peers.set_peer_state(&peer, PeerState::Unreachable);
-                        // TODO: signal for dead peer detected
+                        // signal for dead peer detected
                         let _ = me.poster.post(ProtocolEvent::KadPeerStopped(peer)).await;
                     }
                 }
