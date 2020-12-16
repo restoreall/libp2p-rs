@@ -20,7 +20,7 @@
 
 use futures::channel::{mpsc, oneshot};
 use futures::SinkExt;
-use libp2prs_core::PeerId;
+use libp2prs_core::{PeerId, Multiaddr};
 
 use crate::{record, KadError};
 use crate::query::PeerRecord;
@@ -31,6 +31,10 @@ type Result<T> = std::result::Result<T, KadError>;
 pub(crate) enum ControlCommand {
     /// Initiate bootstrapping to join the Kad DHT network.
     Bootstrap,
+    /// Adds a peer to Kad KBuckets, and its multiaddr to Peerstore.
+    AddNode(PeerId, Vec<Multiaddr>),
+    /// Removes a peer from Kad KBuckets, also removes it from Peerstore.
+    RemoveNode(PeerId),
     /// Lookups the closer peers with given ID, returns a list of peer Id.
     Lookup(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Searches for a peer with given ID, returns a list of peer info
@@ -60,6 +64,14 @@ pub struct Control {
 impl Control {
     pub(crate) fn new(control_sender: mpsc::UnboundedSender<ControlCommand>) -> Self {
         Control { control_sender }
+    }
+
+    /// Add a node and its listening addresses to KBuckets.
+    pub async fn add_node(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>) {
+        self.control_sender
+            .send(ControlCommand::AddNode(peer_id, addrs))
+            .await
+            .expect("control send add_node");
     }
 
     /// Initiate bootstrapping.

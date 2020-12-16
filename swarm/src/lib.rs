@@ -1202,8 +1202,13 @@ impl Swarm {
 
                     // update peer store with the
                     self.peer_store.add_addr(&peer_id, observed_addr, Duration::from_secs(1));
+                    self.peer_store.add_addr(&peer_id, connection.remote_addr(), Duration::from_secs(1));
                     self.peer_store.add_protocol(&peer_id, info.protocols);
-                    //
+
+                    // well, kick off all protocol handlers for the Identify completion
+                    for handler in self.muxer.protocol_handlers.values_mut() {
+                        handler.identified(peer_id.clone());
+                    }
                 }
                 Err(err) => {
                     log::info!("identify failed {:?} for {:?}", err, connection);

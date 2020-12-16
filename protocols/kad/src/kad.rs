@@ -24,7 +24,6 @@ use std::borrow::Borrow;
 use std::sync::{Arc};
 use fnv::{FnvHashSet, FnvHashMap};
 
-use futures::stream::FusedStream;
 use futures::{
     channel::{mpsc, oneshot},
     prelude::*,
@@ -791,11 +790,21 @@ impl<TStore> Kademlia<TStore>
     /// bucket with random keys.
     ///
     /// > **Note**: Bootstrapping requires at least one node of the DHT to be known.
-    pub async fn bootstrap(&mut self) {
+    async fn bootstrap(&mut self) {
         if !self.bootstrapped {
             let mut poster = self.poster();
             let _ = poster.post(ProtocolEvent::Refresh(RefreshStage::Start)).await;
         }
+    }
+
+    fn add_node(&mut self, peer: PeerId, addresses: Vec<Multiaddr>) {
+        self.swarm.as_ref().map(|s| s.add_addrs(&peer, addresses, Duration::from_secs(1)));
+        self.try_add_peer(peer, false);
+    }
+
+    fn remove_node(&mut self, peer: PeerId) {
+        self.swarm.as_ref().map(|s| s.clear_addrs(&peer));
+        self.try_remove_peer(peer);
     }
 
     /// Performs publishing as a provider of a value for the given key.
@@ -1201,6 +1210,16 @@ impl<TStore> Kademlia<TStore>
         }
     }
 
+    // Called when a peer is identified.
+    async fn handle_peer_identified(&mut self, peer_id: PeerId) {
+        // check if the peer is a eligible Kad peer, try add to Kad if it is
+        if let Some(_swarm) = &mut self.swarm {
+            // TODO:
+            //if swarm.first_supported_protocol()
+            self.try_add_peer(peer_id, false);
+        }
+    }
+
     // handle a new Kad peer is found.
     async fn handle_peer_found(&mut self, peer_id: PeerId, queried: bool) {
         self.try_add_peer(peer_id, queried);
@@ -1220,6 +1239,10 @@ impl<TStore> Kademlia<TStore>
             }
             Some(ProtocolEvent::PeerDisconnected(peer_id)) => {
                 self.handle_peer_disconnected(peer_id).await;
+                Ok(())
+            }
+            Some(ProtocolEvent::PeerIdentified(peer_id)) => {
+                self.handle_peer_identified(peer_id).await;
                 Ok(())
             }
             Some(ProtocolEvent::KadPeerFound(peer_id, queried)) => {
@@ -1412,6 +1435,12 @@ impl<TStore> Kademlia<TStore>
         match cmd {
             Some(ControlCommand::Bootstrap) => {
                 self.bootstrap().await;
+            }
+            Some(ControlCommand::AddNode(peer, addresses)) => {
+                self.add_node(peer, addresses);
+            }
+            Some(ControlCommand::RemoveNode(peer)) => {
+                self.remove_node(peer);
             }
             Some(ControlCommand::Lookup(key, reply)) => {
                 self.get_closest_peers(key, |r| {

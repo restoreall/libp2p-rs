@@ -206,7 +206,7 @@ impl Control {
     }
 
     /// Delete all multiaddr of a peer from address book.
-    pub fn clear_addrs(&mut self, peer_id: &PeerId) {
+    pub fn clear_addrs(&self, peer_id: &PeerId) {
         self.peer_store.clear_addrs(peer_id)
     }
 

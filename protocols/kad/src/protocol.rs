@@ -255,6 +255,12 @@ impl Notifiee for KadProtocolHandler {
             let _ = tx.post(ProtocolEvent::PeerDisconnected(peer_id)).await;
         });
     }
+    fn identified(&mut self, peer_id: PeerId) {
+        let mut tx = self.poster.clone();
+        task::spawn(async move {
+            let _ = tx.post(ProtocolEvent::PeerIdentified(peer_id)).await;
+        });
+    }
 }
 
 #[async_trait]
@@ -835,6 +841,13 @@ pub enum ProtocolEvent {
     ///
     /// This notification comes from Protocol Notifiee trait.
     PeerDisconnected(PeerId),
+    /// A remote peer has been identified.
+    ///
+    /// It means PeerStore must have the Multiaddr and Protocols
+    /// information of the peer.
+    ///
+    /// This notification comes from Protocol Notifiee trait.
+    PeerIdentified(PeerId),
 
     /// A new peer found when trying to query a 'Key' or receiving a
     /// query from peer, which obviously implies we are talking to an

@@ -110,7 +110,7 @@ impl PeerStore {
     }
 
     /// Delete all multiaddr of a peer from address book.
-    pub fn clear_addrs(&mut self, peer_id: &PeerId) {
+    pub fn clear_addrs(&self, peer_id: &PeerId) {
         let mut guard = self.inner.lock().unwrap();
         guard.addrs.clear_addrs(peer_id);
     }

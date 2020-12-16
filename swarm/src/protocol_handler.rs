@@ -48,19 +48,23 @@
 //! In general, multiple protocol handlers should be made into trait objects and then added to `Swarm::muxer`.
 //!
 
+use std::error::Error;
+use async_trait::async_trait;
+use libp2prs_core::PeerId;
+use libp2prs_core::upgrade::{ProtocolName, UpgradeInfo};
+
 use crate::connection::Connection;
 use crate::substream::Substream;
 use crate::ProtocolId;
-use async_trait::async_trait;
-use libp2prs_core::upgrade::{ProtocolName, UpgradeInfo};
-use std::error::Error;
 
-/// Notifiee is an trait for an object wishing to receive notifications from swarm
+/// Notifiee is an trait for an object wishing to receive notifications from swarm.
 pub trait Notifiee {
-    /// called when a connection opened
+    /// called when a connection opened.
     fn connected(&mut self, _conn: &mut Connection) {}
-    /// called when a connection closed
+    /// called when a connection closed.
     fn disconnected(&mut self, _conn: &mut Connection) {}
+    /// called when finishing identifi a remote peer.
+    fn identified(&mut self, _peer: PeerId) {}
 }
 
 /// Common trait for upgrades that can be applied on inbound substreams, outbound substreams,
