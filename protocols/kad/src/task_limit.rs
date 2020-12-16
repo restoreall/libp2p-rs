@@ -1,7 +1,6 @@
-
+use futures::{channel::mpsc, SinkExt, StreamExt};
 use std::future::Future;
 use std::num::NonZeroUsize;
-use futures::{channel::mpsc, StreamExt, SinkExt};
 
 use async_std::task;
 
@@ -25,19 +24,19 @@ impl TaskLimiter {
             parallelism,
             tx,
             rx,
-            handles: vec![]
+            handles: vec![],
         }
     }
 
     pub(crate) async fn run<F, T>(&mut self, future: F)
-        where
-            F: Future<Output = T> + Send + 'static,
+    where
+        F: Future<Output = T> + Send + 'static,
     {
         self.rx.next().await.expect("must be Some");
         let mut tx = self.tx.clone();
         let handle = task::spawn(async move {
             let _ = future.await;
-            let _= tx.send(()).await;
+            let _ = tx.send(()).await;
         });
 
         self.handles.push(handle);
@@ -55,11 +54,11 @@ impl TaskLimiter {
 ////////////////////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
-    use futures::{executor::block_on};
     use super::*;
+    use futures::executor::block_on;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::Arc;
     use std::sync::atomic::Ordering::SeqCst;
+    use std::sync::Arc;
 
     #[test]
     fn test_task_limiter() {
@@ -68,15 +67,16 @@ mod tests {
         block_on(async move {
             for _ in 0..10 {
                 let count = count.clone();
-                limiter.run(async move {
-                    count.fetch_add(1, SeqCst);
-                }).await;
+                limiter
+                    .run(async move {
+                        count.fetch_add(1, SeqCst);
+                    })
+                    .await;
             }
 
             let c = limiter.wait().await;
             assert_eq!(c, 10);
             assert_eq!(count.load(SeqCst), 10);
         });
-
     }
 }

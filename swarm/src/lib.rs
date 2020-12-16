@@ -72,7 +72,7 @@ use std::{error, fmt};
 
 use async_std::task;
 
-use libp2prs_core::peerstore::PeerStore;
+use libp2prs_core::peerstore::{PeerStore, ADDRESS_TTL};
 use libp2prs_core::upgrade::ProtocolName;
 use libp2prs_core::{
     multiaddr::{protocol, Multiaddr},
@@ -83,6 +83,7 @@ use libp2prs_core::{
 
 use crate::connection::{Connection, ConnectionId, ConnectionLimit, Direction};
 use crate::control::SwarmControlCmd;
+use crate::dial::EitherDialAddr;
 use crate::identify::{IdentifyConfig, IdentifyHandler, IdentifyInfo, IdentifyPushHandler};
 use crate::metrics::metric::Metric;
 use crate::muxer::Muxer;
@@ -91,7 +92,6 @@ use crate::ping::{PingConfig, PingHandler};
 use crate::protocol_handler::IProtocolHandler;
 use crate::registry::Addresses;
 use crate::substream::{ConnectInfo, StreamId, Substream};
-use crate::dial::EitherDialAddr;
 
 type Result<T> = std::result::Result<T, SwarmError>;
 
@@ -318,7 +318,7 @@ impl Swarm {
         let (event_tx, event_rx) = mpsc::unbounded();
         let (ctrl_tx, ctrl_rx) = mpsc::channel(0);
 
-        let peer_store = PeerStore::default();
+        let peer_store = PeerStore::new();
         peer_store.add_key(&key.clone().into_peer_id(), key.clone());
 
         if let Err(e) = peer_store.load_data() {
@@ -578,7 +578,13 @@ impl Swarm {
         Ok(())
     }
 
-    fn on_new_stream(&mut self, peer_id: PeerId, pids: Vec<ProtocolId>, use_dht: bool, reply: oneshot::Sender<Result<Substream>>) -> Result<()> {
+    fn on_new_stream(
+        &mut self,
+        peer_id: PeerId,
+        pids: Vec<ProtocolId>,
+        use_dht: bool,
+        reply: oneshot::Sender<Result<Substream>>,
+    ) -> Result<()> {
         if let Some(connection) = self.get_best_conn(&peer_id) {
             // well, we have a connection, start a task to open the stream
             connection.open_stream(pids, move |r| {
@@ -757,8 +763,13 @@ impl Swarm {
         // allocate transaction id and push box::f into hashmap for post-processing
         let tid = self.assign_tid();
         self.dial_transactions.insert(tid, Box::new(f));
-        self.dialer
-            .dial(peer_id, self.transports.clone(), EitherDialAddr::Addresses(addrs.into()), self.event_sender.clone(), tid);
+        self.dialer.dial(
+            peer_id,
+            self.transports.clone(),
+            EitherDialAddr::Addresses(addrs.into()),
+            self.event_sender.clone(),
+            tid,
+        );
     }
 
     fn dial_peer<F: FnOnce(Result<&mut Connection>) + Send + 'static>(&mut self, peer_id: PeerId, use_dht: bool, f: F) {
@@ -1172,7 +1183,7 @@ impl Swarm {
                     log::trace!("ping TTL={:?} for {:?}", ttl, connection);
                     // update peer store with the TTL
                     let peer_id = connection.stream_muxer().remote_peer();
-                    self.peer_store.update_addr(&peer_id, Duration::from_secs(1), ttl);
+                    self.peer_store.update_addr(&peer_id, ttl);
                 }
                 Err(_) => {
                     log::info!("reach the max ping failure count, closing {:?}", connection);
@@ -1201,8 +1212,7 @@ impl Swarm {
                     self.peer_store.add_key(&peer_id, remote_pubkey);
 
                     // update peer store with the
-                    // self.peer_store.add_addr(&peer_id, observed_addr, Duration::from_secs(1));
-                    self.peer_store.add_addrs(&peer_id, info.listen_addrs, Duration::from_secs(1));
+                    self.peer_store.add_addr(&peer_id, connection.remote_addr(), ADDRESS_TTL, false);
                     self.peer_store.add_protocol(&peer_id, info.protocols);
 
                     // well, kick off all protocol handlers for the Identify completion
@@ -1220,7 +1230,7 @@ impl Swarm {
     }
 
     pub fn peer_addrs_add(&mut self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration) {
-        self.peer_store.add_addr(peer_id, addr, ttl);
+        self.peer_store.add_addr(peer_id, addr, ttl, false);
     }
 }
 

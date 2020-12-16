@@ -18,15 +18,15 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::sync::Arc;
-use std::time::Duration;
-use smallvec::SmallVec;
 use futures::{
     channel::{mpsc, oneshot},
     prelude::*,
 };
-use libp2prs_core::{PeerId, Multiaddr, PublicKey};
-use libp2prs_core::peerstore::{PeerStore, AddrBookRecord};
+use libp2prs_core::peerstore::{AddrBookRecord, PeerStore};
+use libp2prs_core::{Multiaddr, PeerId, PublicKey};
+use smallvec::SmallVec;
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::connection::ConnectionId;
 use crate::identify::IdentifyInfo;
@@ -34,7 +34,6 @@ use crate::metrics::metric::Metric;
 use crate::network::NetworkInfo;
 use crate::substream::{StreamId, Substream};
 use crate::{ProtocolId, SwarmError};
-
 
 type Result<T> = std::result::Result<T, SwarmError>;
 
@@ -84,7 +83,11 @@ pub struct Control {
 
 impl Control {
     pub(crate) fn new(sender: mpsc::Sender<SwarmControlCmd>, peer_store: PeerStore, metric: Arc<Metric>) -> Self {
-        Control { sender, peer_store, metric }
+        Control {
+            sender,
+            peer_store,
+            metric,
+        }
     }
 
     /// Get recv package count&bytes
@@ -196,13 +199,13 @@ impl Control {
     }
 
     /// Add a address to address_book by peer_id, if exists, update rtt.
-    pub fn add_addr(&self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration) {
-        self.peer_store.add_addr(peer_id, addr, ttl)
+    pub fn add_addr(&self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration, is_kad: bool) {
+        self.peer_store.add_addr(peer_id, addr, ttl, is_kad)
     }
 
     /// Add many new addresses if they're not already in the Address Book.
-    pub fn add_addrs(&self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration) {
-        self.peer_store.add_addrs(peer_id, addrs, ttl)
+    pub fn add_addrs(&self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration, is_kad: bool) {
+        self.peer_store.add_addrs(peer_id, addrs, ttl, is_kad)
     }
 
     /// Delete all multiaddr of a peer from address book.
@@ -211,10 +214,9 @@ impl Control {
     }
 
     /// Update ttl if current_ttl equals old_ttl.
-    pub fn update_addr(&self, peer_id: &PeerId, old_ttl: Duration, new_ttl: Duration) {
-        self.peer_store.update_addr(peer_id, old_ttl, new_ttl)
+    pub fn update_addr(&self, peer_id: &PeerId, new_ttl: Duration) {
+        self.peer_store.update_addr(peer_id, new_ttl)
     }
-
     /// Get smallvec by peer_id and remove expired address
     pub fn remove_expired_addr(&self, peer_id: &PeerId) {
         self.peer_store.remove_expired_addr(peer_id)
@@ -233,5 +235,4 @@ impl Control {
     pub fn get_protocol(&self, peer_id: &PeerId) -> Option<Vec<String>> {
         self.peer_store.get_protocol(peer_id)
     }
-
 }

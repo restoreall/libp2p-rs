@@ -21,7 +21,7 @@
 //! The `Entry` API for quering and modifying the entries of a `KBucketsTable`
 //! representing the nodes participating in the Kademlia DHT.
 
-pub use super::bucket::{Node, InsertResult, K_VALUE};
+pub use super::bucket::{InsertResult, Node, K_VALUE};
 pub use super::key::*;
 
 use super::*;
@@ -35,20 +35,20 @@ pub struct EntryRefView<'a, TPeerId, TVal> {
 /// An immutable by-reference view of a `Node`.
 pub struct NodeRefView<'a, TKey, TVal> {
     pub key: &'a TKey,
-    pub value: &'a TVal
+    pub value: &'a TVal,
 }
 
 impl<TKey, TVal> EntryRefView<'_, TKey, TVal> {
     pub fn to_owned(&self) -> EntryView<TKey, TVal>
     where
         TKey: Clone,
-        TVal: Clone
+        TVal: Clone,
     {
         EntryView {
             node: Node {
                 key: self.node.key.clone(),
-                value: self.node.value.clone()
-            }
+                value: self.node.value.clone(),
+            },
         }
     }
 }
@@ -89,7 +89,7 @@ struct EntryRef<'a, TKey, TVal> {
 impl<'a, TKey, TVal> Entry<'a, TKey, TVal>
 where
     TKey: Clone + AsRef<KeyBytes>,
-    TVal: Clone
+    TVal: Clone,
 {
     /// Creates a new `Entry` for a `Key`, encapsulating access to a bucket.
     pub(super) fn new(bucket: &'a mut KBucket<TKey, TVal>, key: &'a TKey) -> Self {
@@ -109,10 +109,10 @@ where
             Entry::Present(entry) => Some(EntryRefView {
                 node: NodeRefView {
                     key: entry.0.key,
-                    value: entry.value()
+                    value: entry.value(),
                 },
             }),
-            _ => None
+            _ => None,
         }
     }
 
@@ -149,7 +149,7 @@ pub struct PresentEntry<'a, TKey, TVal>(EntryRef<'a, TKey, TVal>);
 impl<'a, TKey, TVal> PresentEntry<'a, TKey, TVal>
 where
     TKey: Clone + AsRef<KeyBytes>,
-    TVal: Clone
+    TVal: Clone,
 {
     fn new(bucket: &'a mut KBucket<TKey, TVal>, key: &'a TKey) -> Self {
         PresentEntry(EntryRef { bucket, key })
@@ -162,7 +162,9 @@ where
 
     /// Returns the value associated with the key.
     pub fn value(&mut self) -> &mut TVal {
-        &mut self.0.bucket
+        &mut self
+            .0
+            .bucket
             .get_mut(self.0.key)
             .expect("We can only build a PresentEntry if the entry is in the bucket; QED")
             .value
@@ -170,7 +172,9 @@ where
 
     /// Removes the entry from the bucket.
     pub fn remove(self) -> EntryView<TKey, TVal> {
-        let (node, _pos) = self.0.bucket
+        let (node, _pos) = self
+            .0
+            .bucket
             .remove(&self.0.key)
             .expect("We can only build a PresentEntry if the entry is in the bucket; QED");
         EntryView { node }
@@ -184,7 +188,7 @@ pub struct AbsentEntry<'a, TKey, TVal>(EntryRef<'a, TKey, TVal>);
 impl<'a, TKey, TVal> AbsentEntry<'a, TKey, TVal>
 where
     TKey: Clone + AsRef<KeyBytes>,
-    TVal: Clone
+    TVal: Clone,
 {
     fn new(bucket: &'a mut KBucket<TKey, TVal>, key: &'a TKey) -> Self {
         AbsentEntry(EntryRef { bucket, key })
@@ -204,8 +208,7 @@ where
     pub fn insert(&mut self, value: TVal) -> bool {
         self.0.bucket.insert(Node {
             key: self.0.key.clone(),
-            value
+            value,
         })
     }
 }
-

@@ -32,9 +32,9 @@ use libp2prs_swarm::identify::IdentifyConfig;
 use libp2prs_swarm::Swarm;
 use libp2prs_tcp::TcpConfig;
 //use libp2prs_traits::{ReadEx, WriteEx};
-use libp2prs_yamux as yamux;
 use libp2prs_kad::kad::Kademlia;
 use libp2prs_kad::store::MemoryStore;
+use libp2prs_yamux as yamux;
 
 fn main() {
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -78,7 +78,6 @@ fn run_server() {
     kad.start(swarm_control);
 
     swarm.start();
-
 
     loop {
         std::thread::sleep(std::time::Duration::from_secs(5));

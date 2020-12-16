@@ -24,10 +24,10 @@
 //       be useful later for record store
 #![allow(dead_code)]
 
+pub mod kad;
 pub mod kbucket;
 pub mod protocol;
 pub mod record;
-pub mod kad;
 
 mod addresses;
 mod control;
@@ -80,15 +80,15 @@ mod dht_proto {
 // };
 //pub use query::QueryId;
 //pub use protocol::KadConnectionType;
-pub use record::{store, Record, ProviderRecord};
+pub use record::{store, ProviderRecord, Record};
 
-use std::num::NonZeroUsize;
-use std::fmt;
 use std::error::Error;
+use std::fmt;
+use std::num::NonZeroUsize;
 
+use futures::channel::mpsc;
 use libp2prs_core::PeerId;
 use libp2prs_swarm::SwarmError;
-use futures::channel::mpsc;
 
 /// The `k` parameter of the Kademlia specification.
 ///
@@ -168,9 +168,8 @@ pub enum KadError {
     /// Underlying Swarm error.
     Swarm(SwarmError),
     /// Kademliad is Closed
-    Closed(u32)
+    Closed(u32),
 }
-
 
 impl fmt::Display for KadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -208,4 +207,3 @@ impl From<SwarmError> for KadError {
         KadError::Swarm(err)
     }
 }
-

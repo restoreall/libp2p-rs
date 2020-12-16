@@ -18,37 +18,39 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::time::{Duration, Instant};
-use std::num::NonZeroUsize;
+use fnv::{FnvHashMap, FnvHashSet};
 use std::borrow::Borrow;
-use std::sync::{Arc};
-use fnv::{FnvHashSet, FnvHashMap};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use futures::lock::Mutex;
 use futures::{
     channel::{mpsc, oneshot},
     prelude::*,
     select,
 };
-use futures::lock::Mutex;
 
 use async_std::task;
 use async_std::task::JoinHandle;
 
-use libp2prs_core::{PeerId, Multiaddr};
+use libp2prs_core::{Multiaddr, PeerId};
 use libp2prs_swarm::Control as SwarmControl;
 
-use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger, RefreshStage};
 use crate::control::{Control, ControlCommand};
+use crate::protocol::{
+    KadConnectionType, KadMessenger, KadPeer, KadProtocolHandler, KadRequestMsg, KadResponseMsg, KademliaProtocolConfig,
+    ProtocolEvent, RefreshStage,
+};
 
-use crate::query::{QueryConfig, IterativeQuery, QueryType, PeerRecord, FixedQuery};
-use crate::kbucket::KBucketsTable;
-use crate::store::RecordStore;
-use crate::{record, kbucket, Record, KadError, ProviderRecord};
 use crate::addresses::PeerInfo;
-
+use crate::kbucket::KBucketsTable;
+use crate::query::{FixedQuery, IterativeQuery, PeerRecord, QueryConfig, QueryType};
+use crate::store::RecordStore;
+use crate::{kbucket, record, KadError, ProviderRecord, Record};
+use libp2prs_core::peerstore::{ADDRESS_TTL, PROVIDER_ADDR_TTL};
 
 type Result<T> = std::result::Result<T, KadError>;
-
 
 /// `Kademlia` implements the libp2p Kademlia protocol.
 pub struct Kademlia<TStore> {
@@ -95,7 +97,6 @@ pub struct Kademlia<TStore> {
 
     // /// Queued events to return when the behaviour is being polled.
     // queued_events: VecDeque<NetworkBehaviourAction<KademliaHandlerIn<QueryId>, KademliaEvent>>,
-
     /// The currently known addresses of the local node.
     local_addrs: FnvHashSet<Multiaddr>,
 
@@ -108,7 +109,6 @@ pub struct Kademlia<TStore> {
     // New peer is connected or peer is dead.
     // peer_tx: mpsc::UnboundedSender<PeerEvent>,
     // peer_rx: mpsc::UnboundedReceiver<PeerEvent>,
-
     /// Used to handle the incoming Kad events.
     event_tx: mpsc::UnboundedSender<ProtocolEvent>,
     event_rx: mpsc::UnboundedReceiver<ProtocolEvent>,
@@ -119,7 +119,6 @@ pub struct Kademlia<TStore> {
     control_tx: mpsc::UnboundedSender<ControlCommand>,
     control_rx: mpsc::UnboundedReceiver<ControlCommand>,
 }
-
 
 /// The configuration for the `Kademlia` behaviour.
 ///
@@ -163,7 +162,7 @@ impl Default for KademliaConfig {
             provider_publication_interval: Some(Duration::from_secs(12 * 60 * 60)),
             provider_record_ttl: Some(Duration::from_secs(24 * 60 * 60)),
             connection_idle_timeout: Duration::from_secs(10),
-            check_kad_peer_interval
+            check_kad_peer_interval,
         }
     }
 }
@@ -347,8 +346,8 @@ impl KadPoster {
 }
 
 impl<TStore> Kademlia<TStore>
-    where
-            for<'a> TStore: RecordStore<'a> + Send + 'static
+where
+    for<'a> TStore: RecordStore<'a> + Send + 'static,
 {
     /// Creates a new `Kademlia` network behaviour with a default configuration.
     pub fn new(id: PeerId, store: TStore) -> Self {
@@ -396,114 +395,114 @@ impl<TStore> Kademlia<TStore>
         KadPoster::new(self.event_tx.clone())
     }
 
-/*
-    /// Adds a known listen address of a peer participating in the DHT to the
-    /// routing table.
-    ///
-    /// Explicitly adding addresses of peers serves two purposes:
-    ///
-    ///   1. In order for a node to join the DHT, it must know about at least
-    ///      one other node of the DHT.
-    ///
-    ///   2. When a remote peer initiates a connection and that peer is not
-    ///      yet in the routing table, the `Kademlia` behaviour must be
-    ///      informed of an address on which that peer is listening for
-    ///      connections before it can be added to the routing table
-    ///      from where it can subsequently be discovered by all peers
-    ///      in the DHT.
-    ///
-    /// If the routing table has been updated as a result of this operation,
-    /// a [`KademliaEvent::RoutingUpdated`] event is emitted.
-    pub fn add_address(&mut self, peer: &PeerId, address: Multiaddr) -> RoutingUpdate {
-        let key = kbucket::Key::new(peer.clone());
-        match self.kbuckets.entry(&key) {
-            kbucket::Entry::Present(mut entry, _) => {
-                if entry.value().insert(address) {
-                    self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
-                        KademliaEvent::RoutingUpdated {
-                            peer: peer.clone(),
-                            addresses: entry.value().clone(),
-                            old_peer: None,
-                        }
-                    ))
-                }
-                RoutingUpdate::Success
-            }
-            kbucket::Entry::Pending(mut entry, _) => {
-                entry.value().insert(address);
-                RoutingUpdate::Pending
-            }
-            kbucket::Entry::Absent(entry) => {
-                let addresses = Addresses::new(address);
-                let status =
-                    if self.connected_peers.contains(peer) {
-                        NodeStatus::Connected
-                    } else {
-                        NodeStatus::Disconnected
-                    };
-                match entry.insert(addresses.clone(), status) {
-                    kbucket::InsertResult::Inserted => {
+    /*
+        /// Adds a known listen address of a peer participating in the DHT to the
+        /// routing table.
+        ///
+        /// Explicitly adding addresses of peers serves two purposes:
+        ///
+        ///   1. In order for a node to join the DHT, it must know about at least
+        ///      one other node of the DHT.
+        ///
+        ///   2. When a remote peer initiates a connection and that peer is not
+        ///      yet in the routing table, the `Kademlia` behaviour must be
+        ///      informed of an address on which that peer is listening for
+        ///      connections before it can be added to the routing table
+        ///      from where it can subsequently be discovered by all peers
+        ///      in the DHT.
+        ///
+        /// If the routing table has been updated as a result of this operation,
+        /// a [`KademliaEvent::RoutingUpdated`] event is emitted.
+        pub fn add_address(&mut self, peer: &PeerId, address: Multiaddr) -> RoutingUpdate {
+            let key = kbucket::Key::new(peer.clone());
+            match self.kbuckets.entry(&key) {
+                kbucket::Entry::Present(mut entry, _) => {
+                    if entry.value().insert(address) {
                         self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
                             KademliaEvent::RoutingUpdated {
                                 peer: peer.clone(),
-                                addresses,
+                                addresses: entry.value().clone(),
                                 old_peer: None,
                             }
-                        ));
-                        RoutingUpdate::Success
-                    },
-                    kbucket::InsertResult::Full => {
-                        log::debug!("Bucket full. Peer not added to routing table: {}", peer);
-                        RoutingUpdate::Failed
-                    },
-                    kbucket::InsertResult::Pending { disconnected } => {
-                        self.queued_events.push_back(NetworkBehaviourAction::DialPeer {
-                            peer_id: disconnected.into_preimage(),
-                            condition: DialPeerCondition::Disconnected
-                        });
-                        RoutingUpdate::Pending
-                    },
+                        ))
+                    }
+                    RoutingUpdate::Success
                 }
-            },
-            kbucket::Entry::SelfEntry => RoutingUpdate::Failed,
+                kbucket::Entry::Pending(mut entry, _) => {
+                    entry.value().insert(address);
+                    RoutingUpdate::Pending
+                }
+                kbucket::Entry::Absent(entry) => {
+                    let addresses = Addresses::new(address);
+                    let status =
+                        if self.connected_peers.contains(peer) {
+                            NodeStatus::Connected
+                        } else {
+                            NodeStatus::Disconnected
+                        };
+                    match entry.insert(addresses.clone(), status) {
+                        kbucket::InsertResult::Inserted => {
+                            self.queued_events.push_back(NetworkBehaviourAction::GenerateEvent(
+                                KademliaEvent::RoutingUpdated {
+                                    peer: peer.clone(),
+                                    addresses,
+                                    old_peer: None,
+                                }
+                            ));
+                            RoutingUpdate::Success
+                        },
+                        kbucket::InsertResult::Full => {
+                            log::debug!("Bucket full. Peer not added to routing table: {}", peer);
+                            RoutingUpdate::Failed
+                        },
+                        kbucket::InsertResult::Pending { disconnected } => {
+                            self.queued_events.push_back(NetworkBehaviourAction::DialPeer {
+                                peer_id: disconnected.into_preimage(),
+                                condition: DialPeerCondition::Disconnected
+                            });
+                            RoutingUpdate::Pending
+                        },
+                    }
+                },
+                kbucket::Entry::SelfEntry => RoutingUpdate::Failed,
+            }
         }
-    }
 
-    /// Removes an address of a peer from the routing table.
-    ///
-    /// If the given address is the last address of the peer in the
-    /// routing table, the peer is removed from the routing table
-    /// and `Some` is returned with a view of the removed entry.
-    /// The same applies if the peer is currently pending insertion
-    /// into the routing table.
-    ///
-    /// If the given peer or address is not in the routing table,
-    /// this is a no-op.
-    pub fn remove_address(&mut self, peer: &PeerId, address: &Multiaddr)
-                          -> Option<kbucket::EntryView<kbucket::Key<PeerId>, Addresses>>
-    {
-        let key = kbucket::Key::new(peer.clone());
-        match self.kbuckets.entry(&key) {
-            kbucket::Entry::Present(mut entry, _) => {
-                if entry.value().remove(address).is_err() {
-                    Some(entry.remove()) // it is the last address, thus remove the peer.
-                } else {
+        /// Removes an address of a peer from the routing table.
+        ///
+        /// If the given address is the last address of the peer in the
+        /// routing table, the peer is removed from the routing table
+        /// and `Some` is returned with a view of the removed entry.
+        /// The same applies if the peer is currently pending insertion
+        /// into the routing table.
+        ///
+        /// If the given peer or address is not in the routing table,
+        /// this is a no-op.
+        pub fn remove_address(&mut self, peer: &PeerId, address: &Multiaddr)
+                              -> Option<kbucket::EntryView<kbucket::Key<PeerId>, Addresses>>
+        {
+            let key = kbucket::Key::new(peer.clone());
+            match self.kbuckets.entry(&key) {
+                kbucket::Entry::Present(mut entry, _) => {
+                    if entry.value().remove(address).is_err() {
+                        Some(entry.remove()) // it is the last address, thus remove the peer.
+                    } else {
+                        None
+                    }
+                }
+                kbucket::Entry::Pending(mut entry, _) => {
+                    if entry.value().remove(address).is_err() {
+                        Some(entry.remove()) // it is the last address, thus remove the peer.
+                    } else {
+                        None
+                    }
+                }
+                kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => {
                     None
                 }
-            }
-            kbucket::Entry::Pending(mut entry, _) => {
-                if entry.value().remove(address).is_err() {
-                    Some(entry.remove()) // it is the last address, thus remove the peer.
-                } else {
-                    None
-                }
-            }
-            kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => {
-                None
             }
         }
-    }
-*/
+    */
     /// Tries to add a peer into the routing table.
     ///
     /// 1. the peer is already in RT:
@@ -527,7 +526,7 @@ impl<TStore> Kademlia<TStore>
                 if queried {
                     entry.value().set_aliveness(Instant::now());
                 }
-            },
+            }
             kbucket::Entry::Absent(mut entry) => {
                 let info = PeerInfo::new(queried);
                 if entry.insert(info.clone()) {
@@ -536,14 +535,12 @@ impl<TStore> Kademlia<TStore>
                     log::debug!("Bucket full, trying to replace an old node for {}", peer);
                     // try replacing an 'old' peer
                     let bucket = entry.bucket();
-                    let candidate = bucket.iter().filter(|n| {
-                        n.value.is_replaceable() && n.value.get_aliveness().map_or(true, |a|{
-                            now.duration_since(a) > timeout
+                    let candidate = bucket
+                        .iter()
+                        .filter(|n| {
+                            n.value.is_replaceable() && n.value.get_aliveness().map_or(true, |a| now.duration_since(a) > timeout)
                         })
-                    })
-                        .min_by(|x, y| {
-                       x.value.get_aliveness().cmp(&y.value.get_aliveness())
-                    });
+                        .min_by(|x, y| x.value.get_aliveness().cmp(&y.value.get_aliveness()));
 
                     if let Some(candidate) = candidate {
                         let key = candidate.key.clone();
@@ -555,7 +552,7 @@ impl<TStore> Kademlia<TStore>
                         log::debug!("Bucket full, and can't find an replaced node, give up {}", peer);
                     }
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -564,34 +561,25 @@ impl<TStore> Kademlia<TStore>
     ///
     /// Returns `None` if the peer was not in the routing table,
     /// not even pending insertion.
-    fn try_remove_peer(&mut self, peer: PeerId)
-                       -> Option<kbucket::EntryView<kbucket::Key<PeerId>, PeerInfo>>
-    {
+    fn try_remove_peer(&mut self, peer: PeerId) -> Option<kbucket::EntryView<kbucket::Key<PeerId>, PeerInfo>> {
         let key = kbucket::Key::new(peer);
         match self.kbuckets.entry(&key) {
-            kbucket::Entry::Present(entry) => {
-                Some(entry.remove())
-            }
-            kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => {
-                None
-            }
+            kbucket::Entry::Present(entry) => Some(entry.remove()),
+            kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => None,
         }
     }
 
     /// Returns an iterator over all non-empty buckets in the routing table.
-    fn kbuckets(&mut self)
-                    -> impl Iterator<Item = kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>>
-    {
+    fn kbuckets(&mut self) -> impl Iterator<Item = kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>> {
         self.kbuckets.iter().filter(|b| !b.is_empty())
     }
 
     /// Returns the k-bucket for the distance to the given key.
     ///
     /// Returns `None` if the given key refers to the local key.
-    pub fn kbucket<K>(&mut self, key: K)
-                      -> Option<kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>>
-        where
-            K: Borrow<[u8]> + Clone
+    pub fn kbucket<K>(&mut self, key: K) -> Option<kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>>
+    where
+        K: Borrow<[u8]> + Clone,
     {
         self.kbuckets.bucket(&kbucket::Key::new(key))
     }
@@ -602,25 +590,29 @@ impl<TStore> Kademlia<TStore>
     }
 
     // prepare and generate a IterativeQuery for iterative query.
-    fn prepare_iterative_query(&mut self, qt: QueryType, key: record::Key) -> IterativeQuery
-    {
+    fn prepare_iterative_query(&mut self, qt: QueryType, key: record::Key) -> IterativeQuery {
         let local_id = self.kbuckets.self_key().preimage().clone();
         let target = kbucket::Key::new(key.clone());
         let seeds = self.kbuckets.closest_keys(&target).into_iter().collect();
 
-        let query = IterativeQuery::new(qt, key,
-                                        self.swarm.clone().expect("must be Some"),
-                                        self.messengers.clone().expect("must be Some"),
-                                        local_id, self.query_config.clone(),
-                                        seeds, self.poster());
+        let query = IterativeQuery::new(
+            qt,
+            key,
+            self.swarm.clone().expect("must be Some"),
+            self.messengers.clone().expect("must be Some"),
+            local_id,
+            self.query_config.clone(),
+            seeds,
+            self.poster(),
+        );
 
         query
     }
 
     /// Initiates an iterative lookup for the closest peers to the given key.
     fn get_closest_peers<F>(&mut self, key: record::Key, f: F)
-        where
-            F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static
+    where
+        F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static,
     {
         let q = self.prepare_iterative_query(QueryType::GetClosestPeers, key);
 
@@ -634,8 +626,8 @@ impl<TStore> Kademlia<TStore>
     /// The result of this operation is delivered into the callback
     /// Fn(Result<Option<KadPeer>>).
     fn find_peer<F>(&mut self, key: record::Key, f: F)
-        where
-            F: FnOnce(Result<KadPeer>) + Send + 'static
+    where
+        F: FnOnce(Result<KadPeer>) + Send + 'static,
     {
         let q = self.prepare_iterative_query(QueryType::FindPeer, key);
 
@@ -649,8 +641,8 @@ impl<TStore> Kademlia<TStore>
     /// The result of this operation is delivered into the callback
     /// Fn(Result<Vec<KadPeer>>).
     fn get_providers<F>(&mut self, key: record::Key, count: usize, f: F)
-        where
-            F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static
+    where
+        F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static,
     {
         let provider_peers = self.provider_peers(&key, None);
 
@@ -659,13 +651,18 @@ impl<TStore> Kademlia<TStore>
             f(Ok(provider_peers));
         } else {
             let remaining = count - provider_peers.len();
-            let q = self.prepare_iterative_query(QueryType::GetProviders { count: remaining, local: Some(provider_peers) }, key);
+            let q = self.prepare_iterative_query(
+                QueryType::GetProviders {
+                    count: remaining,
+                    local: Some(provider_peers),
+                },
+                key,
+            );
 
-            q.run(|r|{
+            q.run(|r| {
                 f(r.and_then(|r| r.providers.ok_or(KadError::NotFound)));
             });
         }
-
     }
 
     /// Performs a lookup of a record to the given key.
@@ -673,8 +670,8 @@ impl<TStore> Kademlia<TStore>
     /// The result of this operation is delivered into the callback
     /// Fn(Result<Vec<PeerRecord>>).
     fn get_record<F>(&mut self, key: record::Key, f: F)
-        where
-            F: FnOnce(Result<Vec<PeerRecord>>) + Send + 'static
+    where
+        F: FnOnce(Result<Vec<PeerRecord>>) + Send + 'static,
     {
         let quorum = self.query_config.replication_factor.get();
         let mut records = Vec::with_capacity(quorum);
@@ -683,7 +680,10 @@ impl<TStore> Kademlia<TStore>
             if record.is_expired(Instant::now()) {
                 self.store.remove(&key)
             } else {
-                records.push(PeerRecord { peer: None, record: record.into_owned()});
+                records.push(PeerRecord {
+                    peer: None,
+                    record: record.into_owned(),
+                });
             }
         }
 
@@ -695,14 +695,20 @@ impl<TStore> Kademlia<TStore>
             let messengers = self.messengers.clone().expect("must be Some");
 
             let needed = quorum - records.len();
-            let q = self.prepare_iterative_query(QueryType::GetRecord { quorum_needed: needed, local: Some(records) }, key);
-            q.run(|r|{
+            let q = self.prepare_iterative_query(
+                QueryType::GetRecord {
+                    quorum_needed: needed,
+                    local: Some(records),
+                },
+                key,
+            );
+            q.run(|r| {
                 f(r.and_then(|r| {
-                    let record = r.records.as_ref().map(|r|r.first().cloned());
+                    let record = r.records.as_ref().map(|r| r.first().cloned());
                     if let Some(Some(record)) = record {
                         if let Some(cache_peers) = r.cache_peers {
                             let record = record.record;
-                            let fixed_query = FixedQuery::new(QueryType::PutRecord {record}, messengers, config, cache_peers);
+                            let fixed_query = FixedQuery::new(QueryType::PutRecord { record }, messengers, config, cache_peers);
                             fixed_query.run(|_| {});
                         }
                     }
@@ -728,8 +734,8 @@ impl<TStore> Kademlia<TStore>
     /// The result of this operation is delivered into the callback
     /// Fn(Result<()>).
     fn put_record<F>(&mut self, key: record::Key, value: Vec<u8>, f: F)
-        where
-            F: FnOnce(Result<()>) + Send + 'static
+    where
+        F: FnOnce(Result<()>) + Send + 'static,
     {
         // TODO: probably we should check if there is a old record with the same key?
 
@@ -745,8 +751,7 @@ impl<TStore> Kademlia<TStore>
             f(Err(e));
             return;
         }
-        record.expires = record.expires.or_else(||
-            self.record_ttl.map(|ttl| Instant::now() + ttl));
+        record.expires = record.expires.or_else(|| self.record_ttl.map(|ttl| Instant::now() + ttl));
 
         let config = self.query_config.clone();
         let messengers = self.messengers.clone().expect("must be Some");
@@ -756,7 +761,7 @@ impl<TStore> Kademlia<TStore>
                 f(Err(e));
             } else {
                 let peers = peers.unwrap().into_iter().map(KadPeer::into).collect::<Vec<_>>();
-                let fixed_query = FixedQuery::new(QueryType::PutRecord {record}, messengers, config, peers);
+                let fixed_query = FixedQuery::new(QueryType::PutRecord { record }, messengers, config, peers);
                 fixed_query.run(f);
             }
         });
@@ -798,7 +803,7 @@ impl<TStore> Kademlia<TStore>
     }
 
     fn add_node(&mut self, peer: PeerId, addresses: Vec<Multiaddr>) {
-        self.swarm.as_ref().map(|s| s.add_addrs(&peer, addresses, Duration::from_secs(1)));
+        self.swarm.as_ref().map(|s| s.add_addrs(&peer, addresses, ADDRESS_TTL, true));
         self.try_add_peer(peer, false);
     }
 
@@ -827,14 +832,10 @@ impl<TStore> Kademlia<TStore>
     /// The result of this operation is delivered into the callback
     /// Fn(Result<()>).
     fn start_providing<F>(&mut self, key: record::Key, f: F)
-        where
-            F: FnOnce(Result<()>) + Send + 'static
+    where
+        F: FnOnce(Result<()>) + Send + 'static,
     {
-        let provider = ProviderRecord::new(
-            key.clone(),
-            self.kbuckets.self_key().preimage().clone(),
-            None
-        );
+        let provider = ProviderRecord::new(key.clone(), self.kbuckets.self_key().preimage().clone(), None);
         if let Err(e) = self.store.add_provider(provider.clone()) {
             f(Err(e));
             return;
@@ -892,7 +893,7 @@ impl<TStore> Kademlia<TStore>
                     KadPeer {
                         node_id,
                         multiaddrs,
-                        connection_ty
+                        connection_ty,
                     }
                 })
                 .collect()
@@ -905,10 +906,11 @@ impl<TStore> Kademlia<TStore>
         let connected = &self.connected_peers;
         let local_addrs = &self.local_addrs;
         let swarm = self.swarm.as_ref().expect("must be Some");
-        self.store.providers(key)
+        self.store
+            .providers(key)
             .into_iter()
-            .filter_map(move |p|
-                if source.map_or(true, |id|id != &p.provider) {
+            .filter_map(move |p| {
+                if source.map_or(true, |id| id != &p.provider) {
                     let node_id = p.provider;
                     let connection_ty = if connected.contains(&node_id) {
                         KadConnectionType::Connected
@@ -926,7 +928,8 @@ impl<TStore> Kademlia<TStore>
                         Some(local_addrs.iter().cloned().collect::<Vec<_>>())
                     } else {
                         swarm.get_addrs_vec(&node_id)
-                    }.unwrap_or(vec![]);
+                    }
+                    .unwrap_or(vec![]);
 
                     Some(KadPeer {
                         node_id,
@@ -935,50 +938,50 @@ impl<TStore> Kademlia<TStore>
                     })
                 } else {
                     None
-                })
+                }
+            })
             .take(self.query_config.replication_factor.get())
             .collect()
     }
-/*
-    /// Starts an iterative `ADD_PROVIDER` query for the given key.
-    fn start_add_provider(&mut self, key: record::Key, context: AddProviderContext) {
-        let info = QueryInfo::AddProvider {
-            context,
-            key: key.clone(),
-            //phase: AddProviderPhase::GetClosestPeers
-            provider_id: PeerId::random(),
-            external_addresses: vec![],
-            get_closest_peers_stats: QueryStats::empty()
-        };
-        let target = kbucket::Key::new(key);
-        let peers = self.kbuckets.closest_keys(&target);
-        let inner = QueryInner::new(info);
-        self.queries.add_iter_closest(target.clone(), peers, inner);
-    }
+    /*
+        /// Starts an iterative `ADD_PROVIDER` query for the given key.
+        fn start_add_provider(&mut self, key: record::Key, context: AddProviderContext) {
+            let info = QueryInfo::AddProvider {
+                context,
+                key: key.clone(),
+                //phase: AddProviderPhase::GetClosestPeers
+                provider_id: PeerId::random(),
+                external_addresses: vec![],
+                get_closest_peers_stats: QueryStats::empty()
+            };
+            let target = kbucket::Key::new(key);
+            let peers = self.kbuckets.closest_keys(&target);
+            let inner = QueryInner::new(info);
+            self.queries.add_iter_closest(target.clone(), peers, inner);
+        }
 
-    /// Starts an iterative `PUT_VALUE` query for the given record.
-    fn start_put_record(&mut self, record: Record, context: PutRecordContext) {
-        let quorum = self.query_config.replication_factor;
-        let target = kbucket::Key::new(record.key.clone());
-        let peers = self.kbuckets.closest_keys(&target);
-        let info = QueryInfo::PutRecord {
-            record, quorum, context//, phase: PutRecordPhase::GetClosestPeers
-        };
-        let inner = QueryInner::new(info);
-        self.queries.add_iter_closest(target.clone(), peers, inner);
-    }
-*/
+        /// Starts an iterative `PUT_VALUE` query for the given record.
+        fn start_put_record(&mut self, record: Record, context: PutRecordContext) {
+            let quorum = self.query_config.replication_factor;
+            let target = kbucket::Key::new(record.key.clone());
+            let peers = self.kbuckets.closest_keys(&target);
+            let info = QueryInfo::PutRecord {
+                record, quorum, context//, phase: PutRecordPhase::GetClosestPeers
+            };
+            let inner = QueryInner::new(info);
+            self.queries.add_iter_closest(target.clone(), peers, inner);
+        }
+    */
     /// Processes a record received from a peer.
-    fn handle_put_record(
-        &mut self,
-        _source: PeerId,
-        mut record: Record
-    ) -> Result<KadResponseMsg> {
+    fn handle_put_record(&mut self, _source: PeerId, mut record: Record) -> Result<KadResponseMsg> {
         if record.publisher.as_ref() == Some(self.kbuckets.self_key().preimage()) {
             // If the (alleged) publisher is the local node, do nothing. The record of
             // the original publisher should never change as a result of replication
             // and the publisher is always assumed to have the "right" value.
-            return Ok(KadResponseMsg::PutValue { key: record.key, value: record.value });
+            return Ok(KadResponseMsg::PutValue {
+                key: record.key,
+                value: record.value,
+            });
         }
 
         let now = Instant::now();
@@ -1026,8 +1029,8 @@ impl<TStore> Kademlia<TStore>
         // [`KademliaHandlerIn::PutRecordRes`] does not reveal any internal
         // information to a possibly malicious remote node.
         Ok(KadResponseMsg::PutValue {
-                key: record.key,
-                value: record.value,
+            key: record.key,
+            value: record.value,
         })
     }
 
@@ -1035,10 +1038,12 @@ impl<TStore> Kademlia<TStore>
     fn handle_add_provider(&mut self, key: record::Key, provider: KadPeer) {
         if &provider.node_id != self.kbuckets.self_key().preimage() {
             // add provider's addresses to peerstore
-            self.swarm.as_ref().expect("must be Some").add_addrs(&provider.node_id, provider.multiaddrs, Duration::from_secs(1));
+            self.swarm
+                .as_ref()
+                .expect("must be Some")
+                .add_addrs(&provider.node_id, provider.multiaddrs, PROVIDER_ADDR_TTL, true);
 
-            let record = ProviderRecord::new(key, provider.node_id,
-                                             self.provider_record_ttl.map(|ttl| Instant::now() + ttl));
+            let record = ProviderRecord::new(key, provider.node_id, self.provider_record_ttl.map(|ttl| Instant::now() + ttl));
             if let Err(e) = self.store.add_provider(record) {
                 log::info!("Provider record not stored: {:?}", e);
             }
@@ -1063,10 +1068,10 @@ impl<TStore> Kademlia<TStore>
         let mut swarm = self.swarm.clone().expect("must be Some");
         let mut poster = self.poster();
 
-        let peers_to_check = self.kbuckets.closest(&self_key)
-            .filter(|n| n.node.value.get_aliveness().map_or(true, |a|{
-                now.duration_since(a) > interval
-            }))
+        let peers_to_check = self
+            .kbuckets
+            .closest(&self_key)
+            .filter(|n| n.node.value.get_aliveness().map_or(true, |a| now.duration_since(a) > interval))
             .map(|n| n.node.key.into_preimage())
             .collect::<Vec<_>>();
 
@@ -1086,7 +1091,7 @@ impl<TStore> Kademlia<TStore>
             }
 
             log::info!("Kad refresh restarted, total {} nodes removed from Kbuckets", count);
-            let _= poster.post(ProtocolEvent::Refresh(RefreshStage::Start)).await;
+            let _ = poster.post(ProtocolEvent::Refresh(RefreshStage::Start)).await;
         });
 
         self.refresh_timer_handle = Some(h);
@@ -1100,7 +1105,7 @@ impl<TStore> Kademlia<TStore>
         let h = task::spawn(async move {
             loop {
                 task::sleep(interval).await;
-                let _= poster.post(ProtocolEvent::ProviderCleanupTimer).await;
+                let _ = poster.post(ProtocolEvent::ProviderCleanupTimer).await;
             }
         });
 
@@ -1254,11 +1259,7 @@ impl<TStore> Kademlia<TStore>
                 self.handle_peer_stopped(peer_id).await;
                 Ok(())
             }
-            Some(ProtocolEvent::KadRequest {
-                request,
-                source,
-                reply
-            }) => {
+            Some(ProtocolEvent::KadRequest { request, source, reply }) => {
                 self.handle_kad_request(request, source, reply);
                 Ok(())
             }
@@ -1290,9 +1291,7 @@ impl<TStore> Kademlia<TStore>
             }
             KadRequestMsg::FindNode { key } => {
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
-                Ok(Some(KadResponseMsg::FindNode {
-                    closer_peers
-                }))
+                Ok(Some(KadResponseMsg::FindNode { closer_peers }))
             }
             KadRequestMsg::AddProvider { key, provider } => {
                 // Only accept a provider record from a legitimate peer.
@@ -1309,10 +1308,9 @@ impl<TStore> Kademlia<TStore>
                 let provider_peers = self.provider_peers(&key, Some(&source));
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
                 Ok(Some(KadResponseMsg::GetProviders {
-                        closer_peers,
-                        provider_peers,
+                    closer_peers,
+                    provider_peers,
                 }))
-
             }
             KadRequestMsg::GetValue { key } => {
                 // Lookup the record locally.
@@ -1324,19 +1322,14 @@ impl<TStore> Kademlia<TStore>
                         } else {
                             Some(record.into_owned())
                         }
-                    },
-                    None => None
+                    }
+                    None => None,
                 };
 
                 let closer_peers = self.find_closest(&kbucket::Key::new(key), &source);
-                Ok(Some(KadResponseMsg::GetValue {
-                        record,
-                        closer_peers,
-                }))
+                Ok(Some(KadResponseMsg::GetValue { record, closer_peers }))
             }
-            KadRequestMsg::PutValue { record } => {
-                self.handle_put_record(source, record).and_then(|r|Ok(Some(r)))
-            }
+            KadRequestMsg::PutValue { record } => self.handle_put_record(source, record).and_then(|r| Ok(Some(r))),
         };
 
         let _ = reply.send(response);
@@ -1349,19 +1342,19 @@ impl<TStore> Kademlia<TStore>
 
         // TODO: it is pretty confusing that self-owned Providers get recycled!!!
         //let provider_records = self.store.provided()
-        let provider_records = self.store.all_providers()
+        let provider_records = self
+            .store
+            .all_providers()
             .filter(|r| r.is_expired(now))
             .map(|r| r.into_owned())
             .collect::<Vec<_>>();
 
-        provider_records.into_iter().for_each(|r|{
+        provider_records.into_iter().for_each(|r| {
             self.store.remove_provider(&r.key, &r.provider);
         });
     }
 
-    fn handle_refresh_timer(&mut self) {
-
-    }
+    fn handle_refresh_timer(&mut self) {}
 
     // When bootstrap is finished, we start a timer to refresh the routing table. Actually
     // it will trigger the periodic bootstrap procedure in a fixed interval.
@@ -1403,7 +1396,7 @@ impl<TStore> Kademlia<TStore>
                         // Pr(bucket-252) = 1 - (15/16)^16 ~= 0.64
                         // ...
                         let mut target = kbucket::Key::new(PeerId::random());
-                        for _ in 0 .. 16 {
+                        for _ in 0..16 {
                             let d = self_key.distance(&target);
                             if b.contains(&d) {
                                 break;
@@ -1419,7 +1412,7 @@ impl<TStore> Kademlia<TStore>
                 task::spawn(async move {
                     for peer in peers {
                         log::debug!("bootstrap: walk random node for {:?}", peer);
-                        let _= control.lookup(peer.into()).await;
+                        let _ = control.lookup(peer.into()).await;
                     }
                     let _ = poster.post(ProtocolEvent::Refresh(RefreshStage::Completed)).await;
                 });
@@ -1485,9 +1478,6 @@ fn exp_decrease(ttl: Duration, exp: u32) -> Duration {
     Duration::from_secs(ttl.as_secs().checked_shr(exp).unwrap_or(0))
 }
 
-
-
-
 //////////////////////////////////////////////////////////////////////////////
 // Events
 
@@ -1496,7 +1486,6 @@ fn exp_decrease(ttl: Duration, exp: u32) -> Duration {
 /// See [`NetworkBehaviour::poll`].
 #[derive(Debug)]
 pub enum KademliaEvent {
-
     /// The routing table has been updated with a new peer and / or
     /// address, thereby possibly evicting another peer.
     RoutingUpdated {
@@ -1511,9 +1500,7 @@ pub enum KademliaEvent {
     ///
     /// If the peer is to be added to the routing table, a known
     /// listen address for the peer must be provided via [`Kademlia::add_address`].
-    UnroutablePeer {
-        peer: PeerId
-    },
+    UnroutablePeer { peer: PeerId },
 
     /// A connection to a peer has been established for whom a listen address
     /// is known but the peer has not been added to the routing table either
@@ -1526,10 +1513,7 @@ pub enum KademliaEvent {
     ///
     /// See [`Kademlia::kbucket`] for insight into the contents of
     /// the k-bucket of `peer`.
-    RoutablePeer {
-        peer: PeerId,
-        address: Multiaddr,
-    },
+    RoutablePeer { peer: PeerId, address: Multiaddr },
 
     /// A connection to a peer has been established for whom a listen address
     /// is known but the peer is only pending insertion into the routing table
@@ -1542,12 +1526,8 @@ pub enum KademliaEvent {
     ///
     /// See [`Kademlia::kbucket`] for insight into the contents of
     /// the k-bucket of `peer`.
-    PendingRoutablePeer {
-        peer: PeerId,
-        address: Multiaddr,
-    }
+    PendingRoutablePeer { peer: PeerId, address: Multiaddr },
 }
-
 
 /// The possible outcomes of [`Kademlia::add_address`].
 pub enum RoutingUpdate {
@@ -1568,7 +1548,6 @@ pub enum RoutingUpdate {
     Failed,
 }
 
-
 ///////////////////////////////////////////
 #[derive(Clone)]
 pub(crate) struct MessengerManager {
@@ -1579,7 +1558,11 @@ pub(crate) struct MessengerManager {
 
 impl MessengerManager {
     fn new(swarm: SwarmControl, config: KademliaProtocolConfig) -> Self {
-        Self { swarm, config, cache: Arc::new(Default::default()) }
+        Self {
+            swarm,
+            config,
+            cache: Arc::new(Default::default()),
+        }
     }
 
     pub(crate) fn swarm(&mut self) -> &mut SwarmControl {
@@ -1594,9 +1577,7 @@ impl MessengerManager {
         };
 
         match r {
-            Some(sender) => {
-                Ok(sender)
-            }
+            Some(sender) => Ok(sender),
             None => {
                 // make a new sender
                 KadMessenger::build(self.swarm.clone(), peer.clone(), self.config.clone()).await

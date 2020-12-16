@@ -20,11 +20,11 @@
 
 use futures::channel::{mpsc, oneshot};
 use futures::SinkExt;
-use libp2prs_core::{PeerId, Multiaddr};
+use libp2prs_core::{Multiaddr, PeerId};
 
-use crate::{record, KadError};
-use crate::query::PeerRecord;
 use crate::protocol::KadPeer;
+use crate::query::PeerRecord;
+use crate::{record, KadError};
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -52,8 +52,6 @@ pub(crate) enum ControlCommand {
     /// Searches value corresponding to given Key.
     GetValue(record::Key, oneshot::Sender<Result<Vec<PeerRecord>>>),
 }
-
-
 
 #[derive(Clone)]
 pub struct Control {

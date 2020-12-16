@@ -48,10 +48,10 @@
 //! In general, multiple protocol handlers should be made into trait objects and then added to `Swarm::muxer`.
 //!
 
-use std::error::Error;
 use async_trait::async_trait;
-use libp2prs_core::PeerId;
 use libp2prs_core::upgrade::{ProtocolName, UpgradeInfo};
+use libp2prs_core::PeerId;
+use std::error::Error;
 
 use crate::connection::Connection;
 use crate::substream::Substream;

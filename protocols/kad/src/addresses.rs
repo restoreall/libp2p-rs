@@ -30,7 +30,7 @@ pub struct PeerInfo {
     added_at: Instant,
 
     /// If a bucket is full, this peer can be replaced to make space for a new peer.
-    replaceable: bool
+    replaceable: bool,
 }
 
 impl PeerInfo {
@@ -38,7 +38,7 @@ impl PeerInfo {
         Self {
             aliveness: if aliveness { Some(Instant::now()) } else { None },
             added_at: Instant::now(),
-            replaceable: true
+            replaceable: true,
         }
     }
 

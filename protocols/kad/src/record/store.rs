@@ -22,13 +22,12 @@ mod memory;
 
 pub use memory::{MemoryStore, MemoryStoreConfig};
 
-use crate::{K_VALUE, KadError};
 use super::*;
+use crate::{KadError, K_VALUE};
 use std::borrow::Cow;
 
 /// The result of an operation on a `RecordStore`.
 pub type Result<T> = std::result::Result<T, KadError>;
-
 
 /// Trait for types implementing a record store.
 ///
@@ -84,4 +83,3 @@ pub trait RecordStore<'a> {
     /// Removes a provider record from the store.
     fn remove_provider(&'a mut self, k: &Key, p: &PeerId);
 }
-

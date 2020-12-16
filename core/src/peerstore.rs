@@ -18,6 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use crate::peerstore::AddrType::{KAD, OTHER};
 use crate::{Multiaddr, PeerId, PublicKey};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -25,13 +26,24 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{fmt, io};
-use std::sync::{Mutex, Arc};
+
+pub const ADDRESS_TTL: Duration = Duration::from_secs(3600);
+pub const TEMP_ADDR_TTL: Duration = Duration::from_secs(120);
+pub const PROVIDER_ADDR_TTL: Duration = Duration::from_secs(600);
+pub const RECENTLY_CONNECTED_ADDR_TTL: Duration = Duration::from_secs(600);
+pub const OWN_OBSERVED_ADDR_TTL: Duration = Duration::from_secs(600);
+
+pub const PERMANENT_ADDR_TTL: Duration = Duration::from_secs((1 << 63) - 1);
+pub const CONNECTED_ADDR_TTL: Duration = Duration::from_secs((1 << 63) - 2);
+
+pub const GC_PURGE_INTERVAL: Duration = Duration::from_secs(600);
 
 #[derive(Default, Clone)]
 pub struct PeerStore {
-    inner: Arc<Mutex<Inner>>
+    inner: Arc<Mutex<Inner>>,
 }
 
 #[derive(Default, Debug)]
@@ -42,6 +54,17 @@ pub struct Inner {
 }
 
 impl PeerStore {
+    pub fn new() -> PeerStore {
+        let p = PeerStore::default();
+
+        // let peer_store = p.clone();
+        // task::spawn(async move {
+        //     peer_store.addr_gc().await;
+        // });
+
+        p
+    }
+
     /// Save addr_book when closing swarm
     pub fn save_data(&self) -> io::Result<()> {
         let mut ds_addr_book = HashMap::new();
@@ -97,16 +120,21 @@ impl PeerStore {
         guard.keys.get_key(peer_id).cloned()
     }
 
+    pub fn get_all_peer_id(&self) -> Vec<PeerId> {
+        let guard = self.inner.lock().unwrap();
+        guard.addrs.get_all_peer()
+    }
+
     /// Add address to address_book by peer_id, if exists, update rtt.
-    pub fn add_addr(&self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration) {
+    pub fn add_addr(&self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration, is_kad: bool) {
         let mut guard = self.inner.lock().unwrap();
-        guard.addrs.add_addr(peer_id, addr, ttl);
+        guard.addrs.add_addr(peer_id, addr, ttl, is_kad);
     }
 
     /// Add many new addresses if they're not already in the Address Book.
-    pub fn add_addrs(&self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration) {
+    pub fn add_addrs(&self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration, is_kad: bool) {
         let mut guard = self.inner.lock().unwrap();
-        guard.addrs.add_addrs(peer_id, addrs, ttl);
+        guard.addrs.add_addrs(peer_id, addrs, ttl, is_kad);
     }
 
     /// Delete all multiaddr of a peer from address book.
@@ -122,9 +150,9 @@ impl PeerStore {
     }
 
     /// Update ttl if current_ttl equals old_ttl.
-    pub fn update_addr(&self, peer_id: &PeerId, old_ttl: Duration, new_ttl: Duration) {
+    pub fn update_addr(&self, peer_id: &PeerId, new_ttl: Duration) {
         let mut guard = self.inner.lock().unwrap();
-        guard.addrs.update_addr(peer_id, old_ttl, new_ttl);
+        guard.addrs.update_addr(peer_id, new_ttl);
     }
 
     /// Get smallvec by peer_id and remove expired address
@@ -162,12 +190,31 @@ impl PeerStore {
         guard.protos.support_protocol(peer_id, proto)
     }
 
+    pub async fn addr_gc(self) {
+        loop {
+            log::info!("GC is looping...");
+            async_std::task::sleep(GC_PURGE_INTERVAL).await;
+            let pid_addr = self.get_all_peer_id();
+            if !pid_addr.is_empty() {
+                for id in pid_addr {
+                    self.remove_expired_addr(&id);
+                }
+            }
+            log::info!("GC finished");
+        }
+    }
 }
 
 impl fmt::Debug for PeerStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("PeerStore").field(&self.inner).finish()
     }
+}
+
+#[derive(Copy, Clone, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
+pub enum AddrType {
+    KAD,
+    OTHER,
 }
 
 /// Store address
@@ -180,8 +227,8 @@ struct AddrBook {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AddrBookRecord {
     addr: Multiaddr,
-    ttl: f64,
-    expiry: Duration,
+    addr_type: AddrType,
+    expiry: Option<Duration>,
 }
 
 impl AddrBookRecord {
@@ -195,23 +242,23 @@ impl AddrBookRecord {
         self.addr
     }
 
-    /// Set the route-trip-time
-    pub fn set_ttl(&mut self, ttl: Duration) {
-        self.ttl = ttl.as_secs_f64()
-    }
+    // /// Set the route-trip-time
+    // pub fn set_ttl(&mut self, ttl: Duration) {
+    //
+    // }
 
     /// Set the expiry time
-    pub fn set_expiry(&mut self, expiry: Duration) {
+    pub fn set_expiry(&mut self, expiry: Option<Duration>) {
         self.expiry = expiry
     }
 
     /// Get the route-trip-time
-    pub fn get_ttl(&self) -> f64 {
-        self.ttl
+    pub fn get_type(&self) -> AddrType {
+        self.addr_type
     }
 
     /// Get the expiry time
-    pub fn get_expiry(&self) -> Duration {
+    pub fn get_expiry(&self) -> Option<Duration> {
         self.expiry
     }
 }
@@ -231,7 +278,20 @@ impl fmt::Display for AddrBook {
 
 impl AddrBook {
     // Add address to address_book by peer_id, if exists, update rtt.
-    fn add_addr(&mut self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration) {
+    fn add_addr(&mut self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration, is_kad: bool) {
+        let expiry = if is_kad {
+            None
+        } else {
+            Some(
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .checked_add(ttl)
+                    .unwrap(),
+            )
+        };
+
+        let addr_type = if is_kad { KAD } else { OTHER };
         // Peer_id exist, get vector.
         if let Some(entry) = self.addr_book.get_mut(peer_id) {
             let mut exist = false;
@@ -241,11 +301,6 @@ impl AddrBook {
                 if i.addr == addr {
                     // In order to get mutable
                     let record: &mut AddrBookRecord = entry.get_mut(count).unwrap();
-                    let expiry = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .checked_add(ttl)
-                        .unwrap();
                     record.set_expiry(expiry);
                     exist = true;
                     break;
@@ -253,35 +308,18 @@ impl AddrBook {
             }
             // If not exists, insert an address into vector.
             if !exist {
-                entry.push(AddrBookRecord {
-                    addr,
-                    ttl: ttl.as_secs_f64(),
-                    expiry: SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .checked_add(ttl)
-                        .unwrap(),
-                })
+                entry.push(AddrBookRecord { addr, addr_type, expiry })
             }
         } else {
             // Peer_id non-exists, create a new vector.
-            let vec = vec![AddrBookRecord {
-                addr,
-                ttl: ttl.as_secs_f64(),
-                expiry: SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .checked_add(ttl)
-                    .unwrap(),
-            }];
+            let vec = vec![AddrBookRecord { addr, addr_type, expiry }];
             self.addr_book.insert(peer_id.clone(), SmallVec::from_vec(vec));
         }
     }
 
-    fn add_addrs(&mut self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration) {
-        // TODO:
+    fn add_addrs(&mut self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration, is_kad: bool) {
         for addr in addrs {
-            self.add_addr(&peer_id, addr, ttl);
+            self.add_addr(peer_id, addr, ttl, is_kad)
         }
     }
 
@@ -293,8 +331,12 @@ impl AddrBook {
         self.addr_book.get(peer_id)
     }
 
+    fn get_all_peer(&self) -> Vec<PeerId> {
+        self.addr_book.keys().map(|x| x.clone()).collect::<Vec<PeerId>>()
+    }
+
     // Update ttl if current_ttl equals old_ttl.
-    fn update_addr(&mut self, peer_id: &PeerId, old_ttl: Duration, new_ttl: Duration) {
+    fn update_addr(&mut self, peer_id: &PeerId, new_ttl: Duration) {
         if self.get_addr(peer_id).is_some() {
             let record_vec = self.addr_book.get_mut(peer_id).unwrap();
             let time = SystemTime::now()
@@ -304,10 +346,11 @@ impl AddrBook {
                 .unwrap();
 
             for record in record_vec.into_iter() {
-                if (record.ttl - old_ttl.as_secs_f64()) == 0.0 {
-                    record.set_ttl(new_ttl);
-                    record.set_expiry(time);
+                if record.addr_type == KAD {
+                    continue;
                 }
+
+                record.set_expiry(Some(time));
             }
         }
     }
@@ -317,11 +360,16 @@ impl AddrBook {
         let addr = self.addr_book.get_mut(peer_id).unwrap();
         let time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
         let iter_vec = addr.clone();
+        let mut remove_count = 0;
         for (index, value) in iter_vec.iter().enumerate() {
-            if value.expiry > time {
+            if value.addr_type == KAD {
+                continue;
+            }
+            if value.expiry.unwrap().gt(&time) {
                 continue;
             } else {
-                addr.remove(index);
+                addr.remove(index - remove_count);
+                remove_count += 1;
             }
         }
     }
@@ -467,25 +515,20 @@ mod tests {
 
         let peer_id = PeerId::random();
 
-        ab.add_addr(&peer_id, "/memory/123456".parse().unwrap(), Duration::from_secs(1));
+        ab.add_addr(&peer_id, "/memory/123456".parse().unwrap(), Duration::from_secs(1), false);
 
         assert_eq!(
             &(ab.get_addr(&peer_id).unwrap().first().unwrap().addr),
             &"/memory/123456".parse().unwrap()
         );
 
-        ab.add_addr(&peer_id, "/memory/654321".parse().unwrap(), Duration::from_secs(1));
+        ab.add_addr(&peer_id, "/memory/654321".parse().unwrap(), Duration::from_secs(1), false);
         let addrs = ab.get_addr(&peer_id).unwrap();
         assert_eq!(addrs.len(), 2);
 
-        ab.add_addr(&peer_id, "/memory/654321".parse().unwrap(), Duration::from_secs(1));
+        ab.add_addr(&peer_id, "/memory/654321".parse().unwrap(), Duration::from_secs(1), false);
         let addrs = ab.get_addr(&peer_id).unwrap();
         assert_eq!(addrs.len(), 2);
-
-        ab.update_addr(&peer_id, Duration::from_secs(1), Duration::from_secs(3));
-        info!("{}", ab.get_addr(&peer_id).unwrap().first().unwrap().ttl);
-        let zero = ab.get_addr(&peer_id).unwrap().first().unwrap().ttl - Duration::from_secs(3).as_secs_f64();
-        assert_eq!(zero as i64, 0);
 
         ab.clear_addrs(&peer_id);
         assert!(ab.get_addr(&peer_id).is_none());

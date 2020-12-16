@@ -22,11 +22,11 @@
 
 pub mod store;
 
-use std::time::Instant;
-use std::borrow::Borrow;
-use std::hash::{Hash, Hasher};
 use bytes::Bytes;
 use multihash::Multihash;
+use std::borrow::Borrow;
+use std::hash::{Hash, Hasher};
+use std::time::Instant;
 
 use libp2prs_core::PeerId;
 
@@ -93,7 +93,7 @@ impl Record {
     /// Creates a new record for insertion into the DHT.
     pub fn new<K>(key: K, value: Vec<u8>) -> Self
     where
-        K: Into<Key>
+        K: Into<Key>,
     {
         Record {
             key: key.into(),
@@ -121,6 +121,8 @@ pub struct ProviderRecord {
     pub expires: Option<Instant>,
 }
 
+// Skip clippy::derive_hash_xor_eq, but it may to be resolved.
+#[allow(clippy::derive_hash_xor_eq)]
 impl Hash for ProviderRecord {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.key.hash(state);
@@ -132,7 +134,7 @@ impl ProviderRecord {
     /// Creates a new provider record for insertion into a `RecordStore`.
     pub fn new<K>(key: K, provider: PeerId, expires: Option<Instant>) -> Self
     where
-        K: Into<Key>
+        K: Into<Key>,
     {
         ProviderRecord {
             key: key.into(),
@@ -150,8 +152,8 @@ impl ProviderRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quickcheck::*;
     use multihash::{wrap, Code};
+    use quickcheck::*;
     use rand::Rng;
     use std::time::Duration;
 
@@ -191,4 +193,3 @@ mod tests {
         }
     }
 }
-
