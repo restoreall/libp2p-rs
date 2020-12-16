@@ -279,10 +279,9 @@ impl ClosestPeers
 
     // helper of calculating key and distance
     fn distance(&self, peer_id: PeerId) -> Distance {
-        let key= Key::from(peer_id);
-        let distance = key.distance(&self.target);
-
-        distance
+        let rkey = record::Key::from(peer_id);
+        let key= Key::new(rkey);
+        key.distance(&self.target)
     }
 
     // extend the btree with an vector of peer_id

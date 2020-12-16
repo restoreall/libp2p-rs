@@ -287,7 +287,7 @@ impl ProtocolHandler for KadProtocolHandler {
                 let mut buf = Vec::with_capacity(proto_struct.encoded_len());
                 proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
 
-                let _= stream.write2(&buf).await?;
+                let _= stream.write_one(&buf).await?;
             }
         }
     }
@@ -340,7 +340,7 @@ impl KadMessenger {
         let proto_struct = req_msg_to_proto(request);
         let mut buf = Vec::with_capacity(proto_struct.encoded_len());
         proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
-        self.stream.write2(&buf).await?;
+        self.stream.write_one(&buf).await?;
 
         Ok(())
     }
@@ -351,7 +351,7 @@ impl KadMessenger {
         let proto_struct = req_msg_to_proto(request);
         let mut buf = Vec::with_capacity(proto_struct.encoded_len());
         proto_struct.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
-        self.stream.write2(&buf).await?;
+        self.stream.write_one(&buf).await?;
 
         let packet = self.stream.read_one(self.config.max_packet_size).await?;
         let response = proto::Message::decode(&packet[..]).map_err(|_| KadError::Decode)?;

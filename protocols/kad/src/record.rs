@@ -187,7 +187,6 @@ mod tests {
                 } else {
                     None
                 },
-                addresses: vec![],
             }
         }
     }

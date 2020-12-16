@@ -1192,6 +1192,7 @@ impl<TStore> Kademlia<TStore>
 
     // Called when new peer is connected.
     async fn handle_peer_connected(&mut self, peer_id: PeerId) {
+        self.try_add_peer(peer_id.clone(), false);
         // the peer id might have existed in the hashset, don't care too much
         self.connected_peers.insert(peer_id);
     }
