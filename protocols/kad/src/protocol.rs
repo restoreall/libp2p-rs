@@ -815,7 +815,8 @@ mod tests {
 }
 
 #[derive(Debug)]
-pub enum BootstrapStage {
+pub enum RefreshStage {
+    Start,
     SelfQueryDone,
     Completed,
 }
@@ -823,8 +824,8 @@ pub enum BootstrapStage {
 /// Event produced by the Kademlia handler.
 #[derive(Debug)]
 pub enum ProtocolEvent {
-    /// Bootstrap state.
-    Bootstrap(BootstrapStage),
+    /// Refresh state.
+    Refresh(RefreshStage),
 
     /// A new connection from peer_id is opened.
     ///
@@ -851,6 +852,9 @@ pub enum ProtocolEvent {
 
     /// Timer event for Provider cleanup.
     ProviderCleanupTimer,
+
+    /// Timer event for Refresh.
+    RefreshTimer,
 
     /// Kad request message from remote peer.
     ///

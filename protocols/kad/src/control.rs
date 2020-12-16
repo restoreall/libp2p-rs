@@ -29,6 +29,8 @@ use crate::protocol::KadPeer;
 type Result<T> = std::result::Result<T, KadError>;
 
 pub(crate) enum ControlCommand {
+    /// Initiate bootstrapping to join the Kad DHT network.
+    Bootstrap,
     /// Lookups the closer peers with given ID, returns a list of peer Id.
     Lookup(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Searches for a peer with given ID, returns a list of peer info
@@ -58,6 +60,16 @@ pub struct Control {
 impl Control {
     pub(crate) fn new(control_sender: mpsc::UnboundedSender<ControlCommand>) -> Self {
         Control { control_sender }
+    }
+
+    /// Initiate bootstrapping.
+    ///
+    /// In general it should be done only once upon Kad startup.
+    pub async fn bootstrap(&mut self) {
+        self.control_sender
+            .send(ControlCommand::Bootstrap)
+            .await
+            .expect("control send bootstrap");
     }
 
     /// Lookup the closer peers with the given key.

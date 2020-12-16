@@ -38,7 +38,7 @@ use async_std::task::JoinHandle;
 use libp2prs_core::{PeerId, Multiaddr};
 use libp2prs_swarm::Control as SwarmControl;
 
-use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger, BootstrapStage};
+use crate::protocol::{KadProtocolHandler, KadPeer, ProtocolEvent, KadRequestMsg, KadResponseMsg, KadConnectionType, KademliaProtocolConfig, KadMessenger, RefreshStage};
 use crate::control::{Control, ControlCommand};
 
 use crate::query::{QueryConfig, IterativeQuery, QueryType, PeerRecord, FixedQuery};
@@ -59,6 +59,9 @@ pub struct Kademlia<TStore> {
     /// Configuration of the wire protocol.
     protocol_config: KademliaProtocolConfig,
 
+    /// Flag to indicate if bootstrapping has been triggered.
+    bootstrapped: bool,
+
     /// The config for queries.
     query_config: QueryConfig,
 
@@ -72,6 +75,9 @@ pub struct Kademlia<TStore> {
 
     /// The timer task handle of Provider cleanup job.
     provider_timer_handle: Option<JoinHandle<()>>,
+
+    /// The timer task handle of Provider cleanup job.
+    refresh_timer_handle: Option<JoinHandle<()>>,
 
     /// The periodic interval to cleanup expired provider records.
     cleanup_interval: Duration,
@@ -371,10 +377,12 @@ impl<TStore> Kademlia<TStore>
             control_rx,
             kbuckets: KBucketsTable::new(local_key),
             protocol_config: config.protocol_config,
+            bootstrapped: false,
             query_config: config.query_config,
             messengers: None,
             connected_peers: Default::default(),
             provider_timer_handle: None,
+            refresh_timer_handle: None,
             cleanup_interval: config.cleanup_interval,
             record_ttl: config.record_ttl,
             provider_record_ttl: config.provider_record_ttl,
@@ -782,25 +790,12 @@ impl<TStore> Kademlia<TStore>
     /// refreshed by initiating an additional bootstrapping query for each such
     /// bucket with random keys.
     ///
-    /// Returns `Ok` if bootstrapping has been initiated with a self-lookup, providing the
-    /// `QueryId` for the entire bootstrapping process. The progress of bootstrapping is
-    /// reported via [`KademliaEvent::QueryResult{QueryResult::Bootstrap}`] events,
-    /// with one such event per bootstrapping query.
-    ///
-    /// Returns `Err` if bootstrapping is impossible due an empty routing table.
-    ///
     /// > **Note**: Bootstrapping requires at least one node of the DHT to be known.
-    /// > See [`Kademlia::add_address`].
-    fn bootstrap(&mut self) {
-        let local_key = self.kbuckets.self_key().clone();
-        let key = local_key.into_preimage();
-        let mut poster = self.poster();
-
-        self.get_closest_peers(key.into(), |_| {
-            task::spawn(async move {
-                let _ = poster.post(ProtocolEvent::Bootstrap(BootstrapStage::SelfQueryDone)).await;
-            });
-        });
+    pub async fn bootstrap(&mut self) {
+        if !self.bootstrapped {
+            let mut poster = self.poster();
+            let _ = poster.post(ProtocolEvent::Refresh(RefreshStage::Start)).await;
+        }
     }
 
     /// Performs publishing as a provider of a value for the given key.
@@ -865,6 +860,7 @@ impl<TStore> Kademlia<TStore>
     /// result.
     fn find_closest<T: Clone>(&mut self, target: &kbucket::Key<T>, source: &PeerId) -> Vec<KadPeer> {
         if target == self.kbuckets.self_key() {
+            // TODO: fill it with self?
             Vec::new()
         } else {
             let connected = &self.connected_peers;
@@ -1049,13 +1045,45 @@ impl<TStore> Kademlia<TStore>
         Control::new(self.control_tx.clone())
     }
 
-    /// Start the main message loop of Kademlia.
-    pub fn start(mut self, swarm: SwarmControl) {
-        self.messengers = Some(MessengerManager::new(swarm.clone(), self.protocol_config.clone()));
-        self.swarm = Some(swarm);
+    fn start_refresh_timer(&mut self) {
+        // start timer task, which would generate ProtocolEvent::Timer to kad main loop
+        log::info!("starting refresh timer task...");
+        let interval = self.check_kad_peer_interval;
+        let now = Instant::now();
+        let self_key = self.kbuckets.self_key().clone();
+        let mut swarm = self.swarm.clone().expect("must be Some");
+        let mut poster = self.poster();
 
-        self.bootstrap();
+        let peers_to_check = self.kbuckets.closest(&self_key)
+            .filter(|n| n.node.value.get_aliveness().map_or(true, |a|{
+                now.duration_since(a) > interval
+            }))
+            .map(|n| n.node.key.into_preimage())
+            .collect::<Vec<_>>();
 
+        let h = task::spawn(async move {
+            task::sleep(interval).await;
+            // run healthy check for all nodes whose aliveness is older than check_kad_peer_interval
+            log::debug!("about to health check {} nodes", peers_to_check.len());
+            let mut count: u32 = 0;
+            for peer in peers_to_check {
+                log::debug!("health checking {}", peer);
+                let r = swarm.new_connection(peer.clone()).await;
+                if r.is_err() {
+                    log::debug!("health checking failed at {}, removing from Kbuckets", peer);
+                    count += 1;
+                    let _ = poster.post(ProtocolEvent::KadPeerStopped(peer)).await;
+                }
+            }
+
+            log::info!("Kad refresh restarted, total {} nodes removed from Kbuckets", count);
+            let _= poster.post(ProtocolEvent::Refresh(RefreshStage::Start)).await;
+        });
+
+        self.refresh_timer_handle = Some(h);
+    }
+
+    fn start_provider_gc(&mut self) {
         // start timer task, which would generate ProtocolEvent::Timer to kad main loop
         log::info!("starting provider timer task...");
         let interval = self.cleanup_interval;
@@ -1068,6 +1096,15 @@ impl<TStore> Kademlia<TStore>
         });
 
         self.provider_timer_handle = Some(h);
+    }
+
+    /// Start the main message loop of Kademlia.
+    pub fn start(mut self, swarm: SwarmControl) {
+        self.messengers = Some(MessengerManager::new(swarm.clone(), self.protocol_config.clone()));
+        self.swarm = Some(swarm);
+
+        // start provider gc
+        self.start_provider_gc();
 
         // well, self 'move' explicitly,
         let mut kad = self;
@@ -1075,7 +1112,6 @@ impl<TStore> Kademlia<TStore>
             let _ = kad.process_loop().await;
         });
     }
-
 
     /// Message Process Loop.
     async fn process_loop(&mut self) -> Result<()> {
@@ -1206,8 +1242,12 @@ impl<TStore> Kademlia<TStore>
                 self.handle_provider_cleanup();
                 Ok(())
             }
-            Some(ProtocolEvent::Bootstrap(stage)) => {
-                self.handle_bootstrap_stage(stage);
+            Some(ProtocolEvent::Refresh(stage)) => {
+                self.handle_refresh_stage(stage);
+                Ok(())
+            }
+            Some(ProtocolEvent::RefreshTimer) => {
+                self.handle_refresh_timer();
                 Ok(())
             }
             None => Err(KadError::Closed(1)),
@@ -1295,9 +1335,25 @@ impl<TStore> Kademlia<TStore>
         });
     }
 
-    fn handle_bootstrap_stage(&mut self, stage: BootstrapStage) {
+    fn handle_refresh_timer(&mut self) {
+
+    }
+
+    // When bootstrap is finished, we start a timer to refresh the routing table. Actually
+    // it will trigger the periodic bootstrap procedure in a fixed interval.
+    fn handle_refresh_stage(&mut self, stage: RefreshStage) {
         match stage {
-            BootstrapStage::SelfQueryDone => {
+            RefreshStage::Start => {
+                let local_id = self.kbuckets.self_key().preimage().clone();
+                let mut poster = self.poster();
+
+                self.get_closest_peers(local_id.into(), |_| {
+                    task::spawn(async move {
+                        let _ = poster.post(ProtocolEvent::Refresh(RefreshStage::SelfQueryDone)).await;
+                    });
+                });
+            }
+            RefreshStage::SelfQueryDone => {
                 log::debug!("bootstrap: self-query done, proceed with random walk");
 
                 let self_key = self.kbuckets.self_key().clone();
@@ -1330,7 +1386,7 @@ impl<TStore> Kademlia<TStore>
                             }
                             target = kbucket::Key::new(PeerId::random());
                         }
-                        target
+                        target.into_preimage()
                     }).collect::<Vec<_>>();
 
                 let mut control = self.control();
@@ -1339,13 +1395,14 @@ impl<TStore> Kademlia<TStore>
                 task::spawn(async move {
                     for peer in peers {
                         log::debug!("bootstrap: walk random node for {:?}", peer);
-                        let _= control.lookup(peer.into_preimage().into()).await;
+                        let _= control.lookup(peer.into()).await;
                     }
-                    let _ = poster.post(ProtocolEvent::Bootstrap(BootstrapStage::Completed)).await;
+                    let _ = poster.post(ProtocolEvent::Refresh(RefreshStage::Completed)).await;
                 });
             }
-            BootstrapStage::Completed => {
-                log::info!("bootstrap: finished");
+            RefreshStage::Completed => {
+                log::info!("bootstrap: finished, start the refresh timer");
+                self.start_refresh_timer();
             }
         }
     }
@@ -1353,6 +1410,9 @@ impl<TStore> Kademlia<TStore>
     // Process publish or subscribe command.
     async fn on_control_command(&mut self, cmd: Option<ControlCommand>) -> Result<()> {
         match cmd {
+            Some(ControlCommand::Bootstrap) => {
+                self.bootstrap().await;
+            }
             Some(ControlCommand::Lookup(key, reply)) => {
                 self.get_closest_peers(key, |r| {
                     let _ = reply.send(r);
