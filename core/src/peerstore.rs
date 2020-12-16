@@ -280,6 +280,9 @@ impl AddrBook {
 
     fn add_addrs(&mut self, peer_id: &PeerId, addrs: Vec<Multiaddr>, ttl: Duration) {
         // TODO:
+        for addr in addrs {
+            self.add_addr(&peer_id, addr, ttl);
+        }
     }
 
     fn clear_addrs(&mut self, peer_id: &PeerId) {
