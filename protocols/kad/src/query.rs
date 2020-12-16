@@ -464,6 +464,138 @@ impl IterativeQuery {
         }
     }
 
+    pub(crate) async fn handle_update(
+        &mut self,
+        update: QueryUpdate,
+        query_results: &mut QueryResult,
+        closest_peers: &mut ClosestPeers,
+    ) -> bool {
+        let me = self;
+        let k_value = me.config.replication_factor.get();
+
+        // handle update, update the closest_peers, and update the kbuckets for new peer
+        // or dead peer detected, update the QueryResult
+        // TODO: check the state before setting state??
+        match update {
+            QueryUpdate::Queried {
+                source,
+                mut closer,
+                provider,
+                record,
+                duration,
+            } => {
+                // incorporate 'closer' into 'clostest_peers', marked as PeerState::NotContacted
+                log::info!("successful query from {:}, closer {:?}, {:?}", source, closer, duration);
+                // note we don't add myself
+                closer.retain(|p| p.node_id != me.local_id.clone());
+
+                // update the PeerStore for the multiaddr, add all multiaddr of Closer peers
+                // to PeerStore
+                for peer in closer.iter() {
+                    me.swarm.add_addrs(&peer.node_id, peer.multiaddrs.clone(), ADDRESS_TTL, true);
+                }
+
+                closest_peers.add_peers(closer);
+                closest_peers.set_peer_state(&source, PeerState::Succeeded);
+
+                // signal the k-buckets for new peer found
+                let _ = me.poster.post(ProtocolEvent::KadPeerFound(source.clone(), true)).await;
+
+                // handle different query type, check if we are done querying
+                match me.query_type {
+                    QueryType::GetClosestPeers => {}
+                    QueryType::FindPeer => {
+                        if let Some(peer) = closest_peers.has_target() {
+                            log::info!("FindPeer: successfully located, {:?}", peer);
+                            query_results.found_peer = Some(peer);
+                            return true;
+                        }
+                    }
+                    QueryType::GetProviders { count, .. } => {
+                        // update providers
+                        if let Some(provider) = provider {
+                            log::trace!("GetProviders: provider found {:?} key={:?}", provider, me.key);
+
+                            // update the PeerStore for the multiaddr, add all multiaddr of Closer peers
+                            // to PeerStore
+                            for peer in provider.iter() {
+                                me.swarm.add_addrs(&peer.node_id, peer.multiaddrs.clone(), PROVIDER_ADDR_TTL, true);
+                            }
+
+                            if !provider.is_empty() {
+                                // append or create the query_results.providers
+                                if let Some(mut old) = query_results.providers.take() {
+                                    old.extend(provider);
+                                    query_results.providers = Some(old);
+                                } else {
+                                    query_results.providers = Some(provider);
+                                }
+                                // check if we have enough providers
+                                if query_results.providers.as_ref().map_or(0, |p| p.len()) >= count {
+                                    log::info!("GetProviders: got enough provider for {:?}, limit={}", me.key, count);
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    QueryType::GetRecord { quorum_needed, .. } => {
+                        if let Some(record) = record {
+                            log::trace!("GetRecord: record found {:?} key={:?}", record, me.key);
+
+                            let pr = PeerRecord {
+                                peer: Some(source),
+                                record,
+                            };
+                            if let Some(mut old) = query_results.records.take() {
+                                old.push(pr);
+                                query_results.records = Some(old);
+                            } else {
+                                query_results.records = Some(vec![pr]);
+                            }
+
+                            // check if we have enough records
+                            if query_results.records.as_ref().map_or(0, |r| r.len()) > quorum_needed {
+                                log::info!("GetRecord: got enough records for key={:?}", me.key);
+
+                                let peers_have_value = query_results
+                                    .records
+                                    .as_ref()
+                                    .expect("must be Some")
+                                    .iter()
+                                    .filter_map(|r| r.peer.as_ref())
+                                    .collect::<Vec<_>>();
+
+                                // figure out the closest peers which didn't have the record
+                                let peers = closest_peers
+                                    .peers_filter(k_value, |p| {
+                                        p.state != PeerState::Unreachable && !peers_have_value.contains(&&p.peer.node_id)
+                                    })
+                                    .map(|p| p.peer.node_id.clone())
+                                    .collect::<Vec<_>>();
+
+                                log::debug!("GetValue, got peers which don't have the value, {:?}", peers);
+                                query_results.cache_peers = Some(peers);
+                                return true;
+                            }
+                        }
+                    }
+                    _ => {
+                        panic!("not gonna happen")
+                    }
+                }
+            }
+            QueryUpdate::Unreachable(peer) => {
+                // set to PeerState::Unreachable
+                log::info!("unreachable peer {:?} detected", peer);
+                closest_peers.set_peer_state(&peer, PeerState::Unreachable);
+                // signal for dead peer detected
+                let _ = me.poster.post(ProtocolEvent::KadPeerStopped(peer)).await;
+            }
+        }
+
+        false
+    }
+
     pub(crate) fn run<F>(self, f: F)
     where
         F: FnOnce(Result<QueryResult>) + Send + 'static,
@@ -534,122 +666,9 @@ impl IterativeQuery {
             loop {
                 // note that the first update comes from the initial seeds
                 let update = rx.next().await.expect("must");
-                // handle update, update the closest_peers, and update the kbuckets for new peer
-                // or dead peer detected, update the QueryResult
-                // TODO: check the state before setting state??
-                match update {
-                    QueryUpdate::Queried {
-                        source,
-                        mut closer,
-                        provider,
-                        record,
-                        duration,
-                    } => {
-                        // incorporate 'closer' into 'clostest_peers', marked as PeerState::NotContacted
-                        log::info!("successful query from {:}, closer {:?}, {:?}", source, closer, duration);
-                        // note we don't add myself
-                        closer.retain(|p| p.node_id != me.local_id.clone());
-
-                        // update the PeerStore for the multiaddr, add all multiaddr of Closer peers
-                        // to PeerStore
-                        for peer in closer.iter() {
-                            me.swarm.add_addrs(&peer.node_id, peer.multiaddrs.clone(), ADDRESS_TTL, true);
-                        }
-
-                        closest_peers.add_peers(closer);
-                        closest_peers.set_peer_state(&source, PeerState::Succeeded);
-
-                        // signal the k-buckets for new peer found
-                        let _ = me.poster.post(ProtocolEvent::KadPeerFound(source.clone(), true)).await;
-
-                        // handle different query type, check if we are done querying
-                        match me.query_type {
-                            QueryType::GetClosestPeers => {}
-                            QueryType::FindPeer => {
-                                if let Some(peer) = closest_peers.has_target() {
-                                    log::info!("FindPeer: successfully located, {:?}", peer);
-                                    query_results.found_peer = Some(peer);
-                                    break;
-                                }
-                            }
-                            QueryType::GetProviders { count, .. } => {
-                                // update providers
-                                if let Some(provider) = provider {
-                                    log::trace!("GetProviders: provider found {:?} key={:?}", provider, me.key);
-
-                                    // update the PeerStore for the multiaddr, add all multiaddr of Closer peers
-                                    // to PeerStore
-                                    for peer in provider.iter() {
-                                        me.swarm.add_addrs(&peer.node_id, peer.multiaddrs.clone(), PROVIDER_ADDR_TTL, true);
-                                    }
-
-                                    if !provider.is_empty() {
-                                        // append or create the query_results.providers
-                                        if let Some(mut old) = query_results.providers.take() {
-                                            old.extend(provider);
-                                            query_results.providers = Some(old);
-                                        } else {
-                                            query_results.providers = Some(provider);
-                                        }
-                                        // check if we have enough providers
-                                        if query_results.providers.as_ref().map_or(0, |p| p.len()) >= count {
-                                            log::info!("GetProviders: got enough provider for {:?}, limit={}", me.key, count);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            QueryType::GetRecord { quorum_needed, .. } => {
-                                if let Some(record) = record {
-                                    log::trace!("GetRecord: record found {:?} key={:?}", record, me.key);
-
-                                    let pr = PeerRecord {
-                                        peer: Some(source),
-                                        record,
-                                    };
-                                    if let Some(mut old) = query_results.records.take() {
-                                        old.push(pr);
-                                        query_results.records = Some(old);
-                                    } else {
-                                        query_results.records = Some(vec![pr]);
-                                    }
-
-                                    // check if we have enough records
-                                    if query_results.records.as_ref().map_or(0, |r| r.len()) > quorum_needed {
-                                        log::info!("GetRecord: got enough records for key={:?}", me.key);
-
-                                        let peers_have_value = query_results
-                                            .records
-                                            .as_ref()
-                                            .expect("must be Some")
-                                            .iter()
-                                            .filter_map(|r| r.peer.as_ref())
-                                            .collect::<Vec<_>>();
-
-                                        // figure out the closest peers which didn't have the record
-                                        let peers = closest_peers
-                                            .peers_filter(k_value, |p| {
-                                                p.state != PeerState::Unreachable && !peers_have_value.contains(&&p.peer.node_id)
-                                            })
-                                            .map(|p| p.peer.node_id.clone())
-                                            .collect::<Vec<_>>();
-
-                                        log::debug!("GetValue, got peers which don't have the value, {:?}", peers);
-                                        query_results.cache_peers = Some(peers);
-                                        break;
-                                    }
-                                }
-                            }
-                            _ => panic!("not gonna happen"),
-                        }
-                    }
-                    QueryUpdate::Unreachable(peer) => {
-                        // set to PeerState::Unreachable
-                        log::info!("unreachable peer {:?} detected", peer);
-                        closest_peers.set_peer_state(&peer, PeerState::Unreachable);
-                        // signal for dead peer detected
-                        let _ = me.poster.post(ProtocolEvent::KadPeerStopped(peer)).await;
-                    }
+                let is_completed = me.handle_update(update, &mut query_results, &mut closest_peers).await;
+                if is_completed {
+                    break;
                 }
 
                 // starvation, if no peer to contact and no pending query
