@@ -53,8 +53,7 @@ impl<TKey, TVal> EntryRefView<'_, TKey, TVal> {
     }
 }
 
-/// A cloned, immutable view of an entry that is either present in a bucket
-/// or pending insertion.
+/// A cloned, immutable view of an entry that is present in a bucket.
 #[derive(Clone, Debug)]
 pub struct EntryView<TKey, TVal> {
     /// The node represented by the entry.
@@ -102,8 +101,7 @@ where
 
     /// Creates an immutable by-reference view of the entry.
     ///
-    /// Returns `None` if the entry is neither present in a bucket nor
-    /// pending insertion into a bucket.
+    /// Returns `None` if the entry isn't present in a bucket.
     pub fn view(&'a mut self) -> Option<EntryRefView<'a, TKey, TVal>> {
         match self {
             Entry::Present(entry) => Some(EntryRefView {

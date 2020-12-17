@@ -72,10 +72,6 @@ pub struct KBucket<TKey, TVal> {
 pub enum InsertResult {
     /// The entry has been successfully inserted.
     Inserted,
-    /// The entry is pending insertion because the relevant bucket is currently full.
-    /// The entry is inserted after a timeout elapsed, if the status of the
-    /// least-recently connected (and currently disconnected) node in the bucket
-    /// is not updated before the timeout expires.
     /// The entry was not inserted because the relevant bucket is full.
     Full,
 }
@@ -100,7 +96,7 @@ where
         self.nodes.iter()
     }
 
-    /// Inserts a new node into the bucket with the given status.
+    /// Inserts a new node into the bucket.
     pub fn insert(&mut self, node: Node<TKey, TVal>) -> bool {
         if self.nodes.is_full() {
             false
@@ -126,7 +122,7 @@ where
         self.nodes.len()
     }
 
-    /// Gets the position of an node in the bucket.
+    /// Gets the position of a node in the bucket.
     pub fn position(&self, key: &TKey) -> Option<Position> {
         self.nodes.iter().position(|p| p.key.as_ref() == key.as_ref()).map(Position)
     }

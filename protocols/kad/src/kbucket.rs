@@ -143,10 +143,6 @@ where
 {
     /// Creates a new, empty Kademlia routing table with entries partitioned
     /// into buckets as per the Kademlia protocol.
-    ///
-    /// The given `pending_timeout` specifies the duration after creation of
-    /// a [`PendingEntry`] after which it becomes eligible for insertion into
-    /// a full bucket, replacing the least-recently (dis)connected node.
     pub fn new(local_key: TKey) -> Self {
         KBucketsTable {
             local_key,

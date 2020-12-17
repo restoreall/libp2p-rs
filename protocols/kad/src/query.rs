@@ -34,7 +34,7 @@ use crate::{record, KadError, ALPHA_VALUE, BETA_VALUE, K_VALUE};
 use crate::kad::{KadPoster, MessengerManager};
 use crate::protocol::{KadConnectionType, KadPeer, ProtocolEvent};
 use crate::task_limit::TaskLimiter;
-use libp2prs_core::peerstore::{ADDRESS_TTL, PROVIDER_ADDR_TTL};
+use libp2prs_core::peerstore::{ADDRESS_TTL, PROVIDER_ADDR_TTL, TEMP_ADDR_TTL};
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -492,7 +492,7 @@ impl IterativeQuery {
                 // update the PeerStore for the multiaddr, add all multiaddr of Closer peers
                 // to PeerStore
                 for peer in closer.iter() {
-                    me.swarm.add_addrs(&peer.node_id, peer.multiaddrs.clone(), ADDRESS_TTL, true);
+                    me.swarm.add_addrs(&peer.node_id, peer.multiaddrs.clone(), TEMP_ADDR_TTL, true);
                 }
 
                 closest_peers.add_peers(closer);
@@ -579,9 +579,7 @@ impl IterativeQuery {
                             }
                         }
                     }
-                    _ => {
-                        panic!("not gonna happen")
-                    }
+                    _ => panic!("not gonna happen"),
                 }
             }
             QueryUpdate::Unreachable(peer) => {
