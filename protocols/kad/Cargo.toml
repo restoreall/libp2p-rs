@@ -37,6 +37,8 @@ env_logger = "0.6.0"
 libp2prs-mplex = { path = "../mplex", version = "0.1.0", package = "libp2prs-mplex" }
 libp2prs-yamux = { path = "../yamux", version = "0.1.0", package = "libp2prs-yamux" }
 libp2prs-secio = { path = "../secio", version = "0.1.0", package = "libp2prs-secio" }
+libp2prs-plaintext = { path = "../plaintext", version = "0.1.0", package = "libp2prs-plaintext" }
+
 libp2prs-tcp = { path = "../../transports/tcp", version = "0.1.0", package = "libp2prs-tcp" }
 lazy_static = "1.4"
 quickcheck = "0.9"

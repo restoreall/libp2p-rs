@@ -50,7 +50,7 @@ pub(crate) enum ControlCommand {
     /// Adds value corresponding to given Key.
     PutValue(record::Key, Vec<u8>, oneshot::Sender<Result<()>>),
     /// Searches value corresponding to given Key.
-    GetValue(record::Key, oneshot::Sender<Result<Vec<PeerRecord>>>),
+    GetValue(record::Key, oneshot::Sender<Result<PeerRecord>>),
 }
 
 #[derive(Clone)]
@@ -99,5 +99,46 @@ impl Control {
             .await
             .expect("control send find_peer");
         rx.await.expect("find_peer")
+    }
+
+    pub async fn put_value(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        let (tx, rx) = oneshot::channel();
+        let key = record::Key::from(key);
+        self.control_sender
+            .send(ControlCommand::PutValue(key, value, tx))
+            .await
+            .expect("control send put_value");
+        let _ = rx.await.expect("put_value");
+    }
+
+    pub async fn get_value(&mut self, key: Vec<u8>) -> Option<Vec<u8>> {
+        let (tx, rx) = oneshot::channel();
+        let key = record::Key::from(key);
+        self.control_sender
+            .send(ControlCommand::GetValue(key, tx))
+            .await
+            .expect("control send get_value");
+        let r: Option<PeerRecord> = rx.await.expect("get_value").map_or(None, |r| Some(r));
+        r.map_or(None, |t| Some(t.record.value))
+    }
+
+    pub async fn provide(&mut self, key: Vec<u8>) {
+        let (tx, rx) = oneshot::channel();
+        let key = record::Key::from(key);
+        self.control_sender
+            .send(ControlCommand::Providing(key, tx))
+            .await
+            .expect("control send provide");
+        let _ = rx.await.expect("provide");
+    }
+
+    pub async fn find_providers(&mut self, key: Vec<u8>, count: usize) -> Option<Vec<KadPeer>> {
+        let (tx, rx) = oneshot::channel();
+        let key = record::Key::from(key);
+        self.control_sender
+            .send(ControlCommand::FindProviders(key, count, tx))
+            .await
+            .expect("control send find_providers");
+        rx.await.expect("find_providers").map_or(None, |r| Some(r))
     }
 }

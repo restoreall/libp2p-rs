@@ -98,6 +98,7 @@ pub struct Kademlia<TStore> {
     // /// Queued events to return when the behaviour is being polled.
     // queued_events: VecDeque<NetworkBehaviourAction<KademliaHandlerIn<QueryId>, KademliaEvent>>,
     /// The currently known addresses of the local node.
+    /// TODO: We need observed addr.
     local_addrs: FnvHashSet<Multiaddr>,
 
     /// The record storage.
@@ -671,7 +672,7 @@ where
     /// Fn(Result<Vec<PeerRecord>>).
     fn get_record<F>(&mut self, key: record::Key, f: F)
     where
-        F: FnOnce(Result<Vec<PeerRecord>>) + Send + 'static,
+        F: FnOnce(Result<PeerRecord>) + Send + 'static,
     {
         let quorum = self.query_config.replication_factor.get();
         let mut records = Vec::with_capacity(quorum);
@@ -688,8 +689,9 @@ where
         }
 
         if records.len() >= quorum {
-            // ok, we have enough, simply return
-            f(Ok(records));
+            // ok, we have enough, simply return first item
+            let record = records.first().cloned().map_or(Err(KadError::NotFound), |r| Ok(r));
+            f(record);
         } else {
             let config = self.query_config.clone();
             let messengers = self.messengers.clone().expect("must be Some");
@@ -705,14 +707,17 @@ where
             q.run(|r| {
                 f(r.and_then(|r| {
                     let record = r.records.as_ref().map(|r| r.first().cloned());
-                    if let Some(Some(record)) = record {
+                    if let Some(Some(record)) = record.clone() {
                         if let Some(cache_peers) = r.cache_peers {
                             let record = record.record;
                             let fixed_query = FixedQuery::new(QueryType::PutRecord { record }, messengers, config, cache_peers);
                             fixed_query.run(|_| {});
                         }
                     }
-                    r.records.ok_or(KadError::NotFound)
+
+                    // only need 1 item, take the first item
+                    // r.records.ok_or(KadError::NotFound)
+                    record.map_or(Err(KadError::NotFound), |r| r.map_or(Err(KadError::NotFound), |r| Ok(r)))
                 }));
             });
         }
@@ -1197,7 +1202,6 @@ where
 
     // Called when new peer is connected.
     async fn handle_peer_connected(&mut self, peer_id: PeerId) {
-        self.try_add_peer(peer_id.clone(), false);
         // the peer id might have existed in the hashset, don't care too much
         self.connected_peers.insert(peer_id);
     }

@@ -34,6 +34,8 @@ mod control;
 mod query;
 mod task_limit;
 
+pub use control::Control;
+
 mod dht_proto {
     include!(concat!(env!("OUT_DIR"), "/dht.pb.rs"));
 }
