@@ -34,7 +34,7 @@ use crate::{record, KadError, ALPHA_VALUE, BETA_VALUE, K_VALUE};
 use crate::kad::{KadPoster, MessengerManager};
 use crate::protocol::{KadConnectionType, KadPeer, ProtocolEvent};
 use crate::task_limit::TaskLimiter;
-use libp2prs_core::peerstore::{ADDRESS_TTL, PROVIDER_ADDR_TTL, TEMP_ADDR_TTL};
+use libp2prs_core::peerstore::{PROVIDER_ADDR_TTL, TEMP_ADDR_TTL};
 
 type Result<T> = std::result::Result<T, KadError>;
 

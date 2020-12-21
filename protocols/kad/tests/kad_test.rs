@@ -91,45 +91,44 @@ fn setup_kads(n: usize) -> Vec<PeerInfo> {
     peers_info
 }
 
-async fn connect(a: &mut PeerInfo, b: &PeerInfo) {
+async fn connect(a: &mut PeerInfo, b: &mut PeerInfo) {
     a.swarm_ctrl.add_addr(&b.pid, b.addr.clone(), Duration::default(), true);
     a.swarm_ctrl.new_connection(b.pid.clone()).await.expect("new connection");
+
+    // add node to KBucket manually
+    a.kad_ctrl.add_node(b.pid.clone(), vec![b.addr.clone()]).await;
+    b.kad_ctrl.add_node(a.pid.clone(), vec![a.addr.clone()]).await;
 }
 
 #[test]
 fn test_value_get_set() {
     fn prop() -> TestResult {
         task::block_on(async {
-            let infos = setup_kads(5);
+            let infos = setup_kads(3);
             let mut node0 = infos.get(0).expect("get peer info").clone();
             let mut node1 = infos.get(1).expect("get peer info").clone();
-            // let mut node2 = infos.get(2).expect("get peer info").clone();
+            let mut node2 = infos.get(2).expect("get peer info").clone();
 
-            connect(&mut node0, &node1).await;
+            connect(&mut node0, &mut node1).await;
+            connect(&mut node2, &mut node1).await;
 
             let key = b"/v/hello".to_vec();
             let value = b"world".to_vec();
             node0.kad_ctrl.put_value(key.clone(), value.clone()).await;
 
-            task::sleep(Duration::from_millis(500)).await;
+            task::sleep(Duration::from_millis(100)).await;
 
             let value1 = node1.kad_ctrl.get_value(key.clone()).await.expect("get value");
             assert_eq!(value, value1);
 
-            TestResult::passed()
+            // node0<->node1 node1<->node2, verify if node2 can get_value with the help of node1
+            let value2 = node2.kad_ctrl.get_value(key.clone()).await.expect("get value");
+            assert_eq!(value, value2);
 
-            // TODO: propagate value and provider record when new peer connected
-            // connect to node0 and node1, verify if get_value success
-            // connect(&mut node2, &node0);
-            // connect(&mut node2, &node1);
-            //
-            // task::sleep(Duration::from_millis(500)).await;
-            //
-            // let value2 = node2.kad_ctrl.get_value(key.clone()).await.expect("get value");
-            // assert_eq!(value, value2);
+            TestResult::passed()
         })
     }
-    env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
     QuickCheck::new().tests(10).quickcheck(prop as fn() -> _);
 }
 
@@ -137,48 +136,39 @@ fn test_value_get_set() {
 fn test_provides() {
     fn prop() -> TestResult {
         task::block_on(async {
-            let infos = setup_kads(2);
+            let infos = setup_kads(4);
             let mut node0 = infos.get(0).expect("get peer info").clone();
             let mut node1 = infos.get(1).expect("get peer info").clone();
-            // let node2 = infos.get(2).expect("get peer info").clone();
-            // let mut node3 = infos.get(3).expect("get peer info").clone();
+            let mut node2 = infos.get(2).expect("get peer info").clone();
+            let mut node3 = infos.get(3).expect("get peer info").clone();
 
-            for info in infos.iter() {
-                println!("{:?}", info.pid);
+            connect(&mut node0, &mut node1).await;
+            connect(&mut node1, &mut node2).await;
+            connect(&mut node1, &mut node3).await;
+
+            let keys: [&str; 3] = ["hello", "world", "rust"];
+            for key in keys.iter() {
+                node3.kad_ctrl.provide(Vec::from(key.clone())).await;
             }
 
-            connect(&mut node0, &node1).await;
-            // connect(&mut node1, &node2).await;
-            // connect(&mut node1, &node3).await;
+            task::sleep(Duration::from_millis(500)).await;
 
-            // wait for identify result
-            task::sleep(Duration::from_secs(1)).await;
-
-            let key = b"hello".to_vec();
-            node0.kad_ctrl.provide(key.clone()).await;
-
-            task::sleep(Duration::from_secs(2)).await;
-
-            let providers = node1.kad_ctrl.find_providers(key.clone(), 1).await.expect("can't find provider");
-            for provider in providers {
-                println!("provider {:?}", provider);
-                assert_eq!(node0.pid, provider.node_id);
-                assert_eq!(node0.addr, provider.multiaddrs.get(0).expect("get addr").clone());
+            for i in 0..2 {
+                let mut pi = infos.get(i).expect("get peer info").clone();
+                for key in keys.iter() {
+                    let providers = pi
+                        .kad_ctrl
+                        .find_providers(Vec::from(key.clone()), 1)
+                        .await
+                        .expect("can't find provider");
+                    for provider in providers {
+                        assert_eq!(node3.pid, provider.node_id);
+                        assert_eq!(node3.addr, provider.multiaddrs.get(0).expect("get addr").clone());
+                    }
+                }
             }
 
             TestResult::passed()
-
-            // let providers = node1.kad_ctrl.find_providers(key.clone(), 1).await.expect("can't find provider");
-            // for provider in providers {
-            //     assert_eq!(node3.pid, provider.node_id);
-            //     assert_eq!(node3.addr, provider.multiaddrs.get(0).expect("get addr").clone());
-            // }
-            //
-            // let providers = node2.kad_ctrl.find_providers(key.clone(), 1).await.expect("can't find provider");
-            // for provider in providers {
-            //     assert_eq!(node3.pid, provider.node_id);
-            //     assert_eq!(node3.addr, provider.multiaddrs.get(0).expect("get addr").clone());
-            // }
         })
     }
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -192,12 +182,12 @@ fn test_find_peer() {
             let infos = setup_kads(5);
             let mut node0 = infos.get(0).expect("get peer info").clone();
             let mut node1 = infos.get(1).expect("get peer info").clone();
-            let node2 = infos.get(2).expect("get peer info").clone();
+            let mut node2 = infos.get(2).expect("get peer info").clone();
 
-            connect(&mut node0, &node1).await;
-            connect(&mut node1, &node2).await;
+            connect(&mut node0, &mut node1).await;
+            connect(&mut node1, &mut node2).await;
 
-            // node0 find node2
+            // node0<->node1 node1<->node2, verify if node2 can find node0 with the help of node1
             let p = node0.kad_ctrl.find_peer(&node2.pid).await.expect("find peer");
             assert_eq!(p.node_id, node2.pid.clone());
 

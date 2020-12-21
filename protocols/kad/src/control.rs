@@ -32,7 +32,7 @@ pub(crate) enum ControlCommand {
     /// Initiate bootstrapping to join the Kad DHT network.
     Bootstrap,
     /// Adds a peer to Kad KBuckets, and its multiaddr to Peerstore.
-    AddNode(PeerId, Vec<Multiaddr>),
+    AddNode(PeerId, Vec<Multiaddr>, oneshot::Sender<()>),
     /// Removes a peer from Kad KBuckets, also removes it from Peerstore.
     RemoveNode(PeerId),
     /// Lookups the closer peers with given ID, returns a list of peer Id.
@@ -66,10 +66,12 @@ impl Control {
 
     /// Add a node and its listening addresses to KBuckets.
     pub async fn add_node(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>) {
+        let (tx, rx) = oneshot::channel();
         self.control_sender
-            .send(ControlCommand::AddNode(peer_id, addrs))
+            .send(ControlCommand::AddNode(peer_id, addrs, tx))
             .await
             .expect("control send add_node");
+        let _ = rx.await.expect("add node reply failed");
     }
 
     /// Initiate bootstrapping.

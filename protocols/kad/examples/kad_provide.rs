@@ -106,6 +106,7 @@ fn run_client() {
     log::info!("Swarm created, local-peer-id={:?}", swarm.local_peer_id());
 
     let remote_peer_id = PeerId::from_public_key(SERVER_KEY.public());
+    let remote_addr: Multiaddr = "/ip4/127.0.0.1/tcp/8086".parse().unwrap();
     log::info!("connect to peer {:?}", remote_peer_id);
 
     let store = MemoryStore::new(swarm.local_peer_id().clone());
@@ -119,16 +120,12 @@ fn run_client() {
     swarm.start();
 
     async_std::task::block_on(async {
-        swarm_ctrl.add_addr(
-            &remote_peer_id,
-            "/ip4/127.0.0.1/tcp/8086".parse().unwrap(),
-            Duration::default(),
-            true,
-        );
+        swarm_ctrl.add_addr(&remote_peer_id, remote_addr.clone(), Duration::default(), true);
         swarm_ctrl.new_connection(remote_peer_id.clone()).await.expect("new connection");
 
         // wait for identify result
         async_std::task::sleep(Duration::from_secs(1)).await;
+        kad_ctrl.add_node(remote_peer_id, vec![remote_addr]).await;
 
         kad_ctrl.provide(PROVIDER_KEY.clone()).await;
 

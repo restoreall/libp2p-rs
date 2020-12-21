@@ -1434,8 +1434,9 @@ where
             Some(ControlCommand::Bootstrap) => {
                 self.bootstrap().await;
             }
-            Some(ControlCommand::AddNode(peer, addresses)) => {
+            Some(ControlCommand::AddNode(peer, addresses, reply)) => {
                 self.add_node(peer, addresses);
+                let _ = reply.send(());
             }
             Some(ControlCommand::RemoveNode(peer)) => {
                 self.remove_node(peer);
