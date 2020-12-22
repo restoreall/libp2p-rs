@@ -874,9 +874,6 @@ pub enum ProtocolEvent {
     /// Timer event for Provider cleanup.
     ProviderCleanupTimer,
 
-    /// Timer event for Refresh.
-    RefreshTimer,
-
     /// Kad request message from remote peer.
     ///
     KadRequest {
