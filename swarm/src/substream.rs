@@ -80,7 +80,7 @@ struct SubstreamMeta {
 #[derive(Clone)]
 pub struct Substream {
     /// The inner sub stream, created by the StreamMuxer
-    inner: IReadWrite,
+    inner: Option<IReadWrite>,
     /// The inner information of the sub-stream
     info: Arc<SubstreamMeta>,
     /// The control channel for closing stream
@@ -103,10 +103,18 @@ impl fmt::Debug for Substream {
 // Note that we spawn a task to close Substream, since Rust doesn't support Async Destructor yet
 impl Drop for Substream {
     fn drop(&mut self) {
-        let mut s = self.clone();
-        async_std::task::spawn(async move {
-            let _ = s.close2().await;
-        });
+        let inner = self.inner.take();
+        if let Some(mut inner) = inner {
+            let cid = self.cid();
+            let sid = StreamId(inner.id());
+            let mut s = self.ctrl.clone();
+            log::trace!("garbage collecting stream {:?}/{:?} {:?}", cid, sid, self.protocol().protocol_name_str());
+
+            async_std::task::spawn(async move {
+                let _ = s.send(SwarmControlCmd::CloseStream(cid, sid)).await;
+                let _ = inner.close2().await;
+            });
+        }
     }
 }
 
@@ -121,7 +129,7 @@ impl Substream {
         ctrl: mpsc::Sender<SwarmControlCmd>,
     ) -> Self {
         Self {
-            inner,
+            inner: Some(inner),
             info: Arc::new(SubstreamMeta { protocol, dir, cid, ci }),
             ctrl,
             metric,
@@ -141,7 +149,7 @@ impl Substream {
         let (ctrl, _) = mpsc::channel(0);
         let metric = Arc::new(Metric::new());
         Self {
-            inner,
+            inner: Some(inner),
             info: Arc::new(SubstreamMeta { protocol, dir, cid, ci }),
             ctrl,
             metric,
@@ -161,7 +169,7 @@ impl Substream {
     }
     /// Returns the sub stream Id.
     pub fn id(&self) -> StreamId {
-        StreamId(self.inner.id())
+        StreamId(self.inner.as_ref().expect("already closed?").id())
     }
     /// Returns the remote multiaddr of the sub stream.
     pub fn remote_multiaddr(&self) -> Multiaddr {
@@ -187,7 +195,7 @@ impl Substream {
 #[async_trait]
 impl ReadEx for Substream {
     async fn read2(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        self.inner.read2(buf).await.map(|n| {
+        self.inner.as_mut().expect("already closed?").read2(buf).await.map(|n| {
             self.metric.log_recv_msg(n);
             self.metric.log_recv_stream(self.protocol(), n, &self.info.ci.rpid);
             n
@@ -198,7 +206,7 @@ impl ReadEx for Substream {
 #[async_trait]
 impl WriteEx for Substream {
     async fn write2(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-        self.inner.write2(buf).await.map(|n| {
+        self.inner.as_mut().expect("already closed?").write2(buf).await.map(|n| {
             self.metric.log_sent_msg(n);
             self.metric.log_sent_stream(self.protocol(), n, &self.info.ci.rpid);
             n
@@ -206,7 +214,7 @@ impl WriteEx for Substream {
     }
 
     async fn flush2(&mut self) -> Result<(), io::Error> {
-        self.inner.flush2().await
+        self.inner.as_mut().expect("already closed?").flush2().await
     }
 
     // try to send a CloseStream command to Swarm, then close inner stream
@@ -215,6 +223,7 @@ impl WriteEx for Substream {
         let cid = self.cid();
         let sid = self.id();
         let _ = self.ctrl.send(SwarmControlCmd::CloseStream(cid, sid)).await;
-        self.inner.close2().await
+        self.inner.as_mut().expect("already closed?").close2().await
     }
 }
+

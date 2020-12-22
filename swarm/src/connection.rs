@@ -76,8 +76,8 @@ pub struct Connection {
     /// The ctrl tx channel.
     ctrl: mpsc::Sender<SwarmControlCmd>,
     /// Handler that processes substreams.
-    substreams: SmallVec<[Substream; 8]>,
-    //substreams: SmallVec<[StreamId; 8]>,
+    //substreams: SmallVec<[Substream; 8]>,
+    substreams: SmallVec<[StreamId; 8]>,
     /// Direction of this connection
     dir: Direction,
     /// Indicates if Ping task is running.
@@ -201,15 +201,17 @@ impl Connection {
 
             // TODO: how to extract the error from TransportError, ??? it doesn't implement 'Clone'
             // So, at this moment, make a new 'TransportError::Internal'
-            let nr = result.as_ref().map(|s| s.clone()).map_err(|_| TransportError::Internal);
-            match nr {
+            let event = match result.as_ref() {
                 Ok(sub_stream) => {
-                    let _ = tx.send(SwarmEvent::StreamOpened { sub_stream }).await;
+                    let sid = sub_stream.id();
+                    SwarmEvent::StreamOpened { cid, sid }
                 }
-                Err(err) => {
-                    let _ = tx.send(SwarmEvent::StreamError { cid, error: err }).await;
+                Err(_) => {
+                    SwarmEvent::StreamError { cid, error: TransportError::Internal }
                 }
-            }
+            };
+
+            let _ = tx.send(event).await;
 
             f(result)
         })
@@ -266,14 +268,14 @@ impl Connection {
     }
 
     /// Adds a substream id to the list.
-    pub(crate) fn add_stream(&mut self, sub_stream: Substream) {
-        log::trace!("adding sub {:?} to {:?}", sub_stream, self);
-        self.substreams.push(sub_stream);
+    pub(crate) fn add_stream(&mut self, sid: StreamId) {
+        log::trace!("adding sub {:?} to {:?}", sid, self);
+        self.substreams.push(sid);
     }
     /// Removes a substream id from the list.
     pub(crate) fn del_stream(&mut self, sid: StreamId) {
         log::trace!("removing sub {:?} from {:?}", sid, self);
-        self.substreams.retain(|s| s.id() != sid);
+        self.substreams.retain(|s| s != &sid);
     }
 
     /// Returns how many substreams in the list.
@@ -320,8 +322,9 @@ impl Connection {
                 let r = open_stream_internal(cid, stream_muxer, pids, ctrl2, metric.clone()).await;
                 let r = match r {
                     Ok(stream) => {
-                        let sub_stream = stream.clone();
-                        let _ = tx.send(SwarmEvent::StreamOpened { sub_stream }).await;
+                        let cid = stream.cid();
+                        let sid = stream.id();
+                        let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
                         let res = ping::ping(stream, timeout).await;
                         if res.is_ok() {
                             fail_cnt = 0;
@@ -378,8 +381,8 @@ impl Connection {
             let r = open_stream_internal(cid, stream_muxer, pids, ctrl, metric).await;
             let r = match r {
                 Ok(stream) => {
-                    let sub_stream = stream.clone();
-                    let _ = tx.send(SwarmEvent::StreamOpened { sub_stream }).await;
+                    let sid = stream.id();
+                    let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
                     identify::consume_message(stream).await
                 }
                 Err(err) => {
@@ -427,8 +430,8 @@ impl Connection {
             let r = open_stream_internal(cid, stream_muxer, pids, ctrl, metric).await;
             match r {
                 Ok(stream) => {
-                    let sub_stream = stream.clone();
-                    let _ = tx.send(SwarmEvent::StreamOpened { sub_stream }).await;
+                    let sid = stream.id();
+                    let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
                     // ignore the error
                     let _ = identify::produce_message(stream, info).await;
                 }
@@ -453,8 +456,9 @@ impl Connection {
 
     pub(crate) fn info(&self) -> ConnectionInfo {
         // calculate inbound
-        let num_inbound_streams = self.substreams.iter().fold(0usize, |mut acc, s| {
-            if s.dir() == Direction::Inbound {
+        // TODO:
+        let num_inbound_streams = self.substreams.iter().fold(0usize, |mut acc, _s| {
+            if true /*s.dir() == Direction::Inbound*/ {
                 acc += 1;
             }
             acc
