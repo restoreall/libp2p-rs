@@ -812,7 +812,7 @@ impl QueryStats {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
-mod tests {
+mod test_closest_peers {
     use super::*;
 
     #[test]
@@ -831,5 +831,86 @@ mod tests {
         assert!(closest_peers.has_target().is_none());
         closest_peers.add_peers(vec![kad_peer]);
         assert!(closest_peers.has_target().is_some());
+    }
+
+    #[test]
+    fn test_starved() {
+        let peer = PeerId::random();
+
+        let mut closest_peers = ClosestPeers::new(PeerId::random().into());
+        assert!(closest_peers.is_starved());
+
+        let kad_peer = KadPeer {
+            node_id: peer.clone(),
+            multiaddrs: vec![],
+            connection_ty: KadConnectionType::NotConnected,
+        };
+
+        // There are only one peer in closest_peers.
+        // The state of new added peer is NotContacted, should be not starved
+        closest_peers.add_peers(vec![kad_peer]);
+        assert!(!closest_peers.is_starved());
+
+        let state = closest_peers.get_peer_state(&peer);
+        assert_eq!(state, Some(PeerState::NotContacted));
+
+        // The state of peer is NotContacted, should be starved
+        closest_peers.set_peer_state(&peer, PeerState::Succeeded);
+        let state = closest_peers.get_peer_state(&peer);
+        assert_eq!(state, Some(PeerState::Succeeded));
+
+        assert!(closest_peers.is_starved());
+    }
+
+    #[test]
+    fn test_terminate() {
+        // closest_peers is empty, can terminate
+        let mut closest_peers = ClosestPeers::new(PeerId::random().into());
+        assert!(closest_peers.can_terminate(1));
+
+        let peer1 = PeerId::random();
+        let kad_peer1 = KadPeer {
+            node_id: peer1.clone(),
+            multiaddrs: vec![],
+            connection_ty: KadConnectionType::NotConnected,
+        };
+
+        // closest_peers has 1 peer and its state is NotContacted, can not terminate
+        closest_peers.add_peers(vec![kad_peer1]);
+        assert!(!closest_peers.can_terminate(1));
+
+        // closest_peers has 1 peer and its state is Succeeded, can terminate
+        closest_peers.set_peer_state(&peer1, PeerState::Succeeded);
+        assert!(closest_peers.can_terminate(1));
+
+        let peer2 = PeerId::random();
+        let peer3 = PeerId::random();
+        let kad_peer2 = KadPeer {
+            node_id: peer2.clone(),
+            multiaddrs: vec![],
+            connection_ty: KadConnectionType::NotConnected,
+        };
+        let kad_peer3 = KadPeer {
+            node_id: peer3.clone(),
+            multiaddrs: vec![],
+            connection_ty: KadConnectionType::NotConnected,
+        };
+        closest_peers.add_peers(vec![kad_peer2, kad_peer3]);
+        // closest_peers has 3 nodes, but the second one is not Succeeded, can not terminate
+        assert!(!closest_peers.can_terminate(2));
+
+        // closest_peers has 3 peer and first 2 peer is Succeeded, can terminate
+        closest_peers.set_peer_state(&peer2, PeerState::Succeeded);
+        assert!(closest_peers.can_terminate(1));
+    }
+}
+
+#[cfg(test)]
+mod test_fixed_query {
+    use crate::query::{FixedQuery, QueryType};
+
+    #[test]
+    fn test_fixed_query() {
+        FixedQuery::new(QueryType::FindPeer, );
     }
 }
