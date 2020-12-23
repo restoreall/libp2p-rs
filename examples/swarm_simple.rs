@@ -40,6 +40,7 @@ use libp2prs_tcp::TcpConfig;
 use libp2prs_traits::{ReadEx, WriteEx};
 use libp2prs_websocket::WsConfig;
 use libp2prs_yamux as yamux;
+use libp2prs_core::peerstore::ADDRESS_TTL;
 
 fn main() {
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -142,8 +143,8 @@ fn run_client() {
 
     log::info!("about to connect to {:?}", remote_peer_id);
 
-    swarm.peer_addrs_add(&remote_peer_id, "/ip4/127.0.0.1/tcp/30199/ws".parse().unwrap(), Duration::default());
-    swarm.peer_addrs_add(&remote_peer_id, "/ip4/127.0.0.1/tcp/8086".parse().unwrap(), Duration::default());
+    swarm.peer_addrs_add(&remote_peer_id, "/ip4/127.0.0.1/tcp/30199/ws".parse().unwrap(), ADDRESS_TTL);
+    swarm.peer_addrs_add(&remote_peer_id, "/ip4/127.0.0.1/tcp/8086".parse().unwrap(), ADDRESS_TTL);
 
     swarm.start();
 

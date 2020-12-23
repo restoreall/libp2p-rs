@@ -27,7 +27,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 use std::{fmt, io};
 
 pub const ADDRESS_TTL: Duration = Duration::from_secs(1 * 60 * 60);
@@ -53,6 +53,13 @@ pub struct Inner {
     keys: KeyBook,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PeerSaved {
+    addr: Multiaddr,
+    addr_type: AddrType,
+    ttl: Duration,
+}
+
 impl PeerStore {
     pub fn new() -> PeerStore {
         let p = PeerStore::default();
@@ -74,7 +81,15 @@ impl PeerStore {
             // Transfer peer_id to String and insert into a new HashMap
             for (peer_id, value) in guard.addrs.addr_book.iter() {
                 let key = peer_id.to_string();
-                ds_addr_book.insert(key, value.to_vec());
+                let mut v = Vec::new();
+                for item in value.to_vec() {
+                    v.push(PeerSaved {
+                        addr: item.addr,
+                        addr_type: item.addr_type,
+                        ttl: item.ttl,
+                    })
+                }
+                ds_addr_book.insert(key, v);
             }
         }
         let json_addrbook = serde_json::to_string(&ds_addr_book)?;
@@ -91,14 +106,27 @@ impl PeerStore {
         let mut buf = vec![0u8; length];
 
         let _ = file.read_exact(buf.as_mut())?;
-        let json_data: HashMap<String, Vec<AddrBookRecord>> =
-            serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let json_data: HashMap<String, Vec<PeerSaved>> =
+            serde_json::from_slice(&buf)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
         let mut guard = self.inner.lock().unwrap();
         for (key, value) in json_data {
-            let peer_id = PeerId::from_str(&key).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            guard.addrs.addr_book.insert(peer_id, SmallVec::from(value));
+            let peer_id = PeerId::from_str(&key)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let mut v = Vec::new();
+            for item in value {
+                v.push(AddrBookRecord {
+                    addr: item.addr,
+                    addr_type: item.addr_type,
+                    ttl: item.ttl.clone(),
+                    expiry: Instant::now().checked_add(item.ttl),
+                })
+            }
+            guard.addrs.addr_book.insert(peer_id, SmallVec::from(v));
         }
+
+        println!("{:?}", guard.addrs);
 
         Ok(())
     }
@@ -174,6 +202,7 @@ impl PeerStore {
         guard.protos.remove_protocol(peer_id);
     }
 
+    /// Get support protocol by peer_id
     pub fn get_protocol(&self, peer_id: &PeerId) -> Option<Vec<String>> {
         let guard = self.inner.lock().unwrap();
         guard.protos.get_protocol(peer_id)
@@ -191,6 +220,7 @@ impl PeerStore {
         guard.protos.support_protocol(peer_id, proto)
     }
 
+    /// Remove timeout address
     pub async fn addr_gc(self) {
         loop {
             log::info!("GC is looping...");
@@ -214,7 +244,11 @@ impl fmt::Debug for PeerStore {
 
 #[derive(Copy, Clone, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub enum AddrType {
+    // KAD means that address is comes from kad protocol.
+    // We can't delete kad address in gc, because it may used later.
     KAD,
+
+    // Normal address, it will be deleted if timeout.
     OTHER,
 }
 
@@ -225,11 +259,12 @@ struct AddrBook {
 }
 
 /// Store address, time-to-server, and expired time
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct AddrBookRecord {
     addr: Multiaddr,
     addr_type: AddrType,
-    expiry: Option<Duration>,
+    ttl: Duration,
+    expiry: Option<Instant>,
 }
 
 impl AddrBookRecord {
@@ -243,13 +278,13 @@ impl AddrBookRecord {
         self.addr
     }
 
-    // /// Set the route-trip-time
-    // pub fn set_ttl(&mut self, ttl: Duration) {
-    //
-    // }
+    /// Set the route-trip-time
+    pub fn set_ttl(&mut self, ttl: Duration) {
+        self.ttl = ttl
+    }
 
     /// Set the expiry time
-    pub fn set_expiry(&mut self, expiry: Option<Duration>) {
+    pub fn set_expiry(&mut self, expiry: Option<Instant>) {
         self.expiry = expiry
     }
 
@@ -258,8 +293,13 @@ impl AddrBookRecord {
         self.addr_type
     }
 
+    /// Set the type of address
+    pub fn set_type(&mut self, addr_type: AddrType) {
+        self.addr_type = addr_type
+    }
+
     /// Get the expiry time
-    pub fn get_expiry(&self) -> Option<Duration> {
+    pub fn get_expiry(&self) -> Option<Instant> {
         self.expiry
     }
 }
@@ -280,16 +320,11 @@ impl fmt::Display for AddrBook {
 impl AddrBook {
     // Add address to address_book by peer_id, if exists, update rtt.
     fn add_addr(&mut self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration, is_kad: bool) {
+        // KAD address will never time out.
         let expiry = if is_kad {
             None
         } else {
-            Some(
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .checked_add(ttl)
-                    .unwrap(),
-            )
+            Instant::now().checked_add(ttl)
         };
 
         let addr_type = if is_kad { KAD } else { OTHER };
@@ -300,20 +335,27 @@ impl AddrBook {
             // Update address's expiry if exist.
             for (count, i) in entry.iter().enumerate() {
                 if i.addr == addr {
-                    // In order to get mutable
                     let record: &mut AddrBookRecord = entry.get_mut(count).unwrap();
-                    record.set_expiry(expiry);
+
+                    if is_kad {
+                        // Update addr to KAD addr.
+                        record.set_type(KAD);
+                        record.set_expiry(None);
+                    } else {
+                        record.set_expiry(expiry);
+                    }
                     exist = true;
                     break;
                 }
             }
+
             // If not exists, insert an address into vector.
             if !exist {
-                entry.push(AddrBookRecord { addr, addr_type, expiry })
+                entry.push(AddrBookRecord { addr, addr_type, ttl, expiry })
             }
         } else {
             // Peer_id non-exists, create a new vector.
-            let vec = vec![AddrBookRecord { addr, addr_type, expiry }];
+            let vec = vec![AddrBookRecord { addr, addr_type, ttl, expiry }];
             self.addr_book.insert(peer_id.clone(), SmallVec::from_vec(vec));
         }
     }
@@ -340,18 +382,14 @@ impl AddrBook {
     fn update_addr(&mut self, peer_id: &PeerId, new_ttl: Duration) {
         if self.get_addr(peer_id).is_some() {
             let record_vec = self.addr_book.get_mut(peer_id).unwrap();
-            let time = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .checked_add(new_ttl)
-                .unwrap();
+            let time = Instant::now().checked_add(new_ttl);
 
             for record in record_vec.into_iter() {
                 if record.addr_type == KAD {
                     continue;
                 }
 
-                record.set_expiry(Some(time));
+                record.set_expiry(time);
             }
         }
     }
@@ -359,14 +397,13 @@ impl AddrBook {
     // Get smallvec by peer_id and remove expired address
     pub fn remove_expired_addr(&mut self, peer_id: &PeerId) {
         let addr = self.addr_book.get_mut(peer_id).unwrap();
-        let time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
         let iter_vec = addr.clone();
         let mut remove_count = 0;
         for (index, value) in iter_vec.iter().enumerate() {
             if value.addr_type == KAD {
                 continue;
             }
-            if value.expiry.unwrap().gt(&time) {
+            if value.expiry.map_or(PERMANENT_ADDR_TTL, |d| d.elapsed()) < GC_PURGE_INTERVAL {
                 continue;
             } else {
                 addr.remove(index - remove_count);
