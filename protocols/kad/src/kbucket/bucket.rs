@@ -77,9 +77,9 @@ pub enum InsertResult {
 }
 
 impl<TKey, TVal> KBucket<TKey, TVal>
-where
-    TKey: Clone + AsRef<KeyBytes>,
-    TVal: Clone,
+    where
+        TKey: Clone + AsRef<KeyBytes>,
+        TVal: Clone,
 {
     /// Creates a new `KBucket` with the given timeout for pending entries.
     pub fn new() -> Self {
@@ -92,7 +92,7 @@ where
     }
 
     /// Returns an iterator over the nodes in the bucket, together with their status.
-    pub fn iter(&self) -> impl Iterator<Item = &Node<TKey, TVal>> {
+    pub fn iter(&self) -> impl Iterator<Item=&Node<TKey, TVal>> {
         self.nodes.iter()
     }
 
@@ -193,5 +193,20 @@ mod tests {
         }
 
         assert_eq!(K_VALUE.get(), bucket.num_entries());
+    }
+
+    #[test]
+    fn remove_bucket() {
+        let mut bucket = KBucket::<Key<PeerId>, ()>::new();
+
+        let key = Key::new(PeerId::random());
+        let node = Node { key: key.clone(), value: () };
+        bucket.insert(node.clone());
+
+        fill_bucket(&mut bucket);
+
+        let (value, pos) = bucket.remove(&key).unwrap();
+        assert_eq!(node, value);
+        assert_eq!(Position(0), pos);
     }
 }

@@ -1275,10 +1275,6 @@ where
                 self.handle_refresh_stage(stage);
                 Ok(())
             }
-            Some(ProtocolEvent::RefreshTimer) => {
-                self.handle_refresh_timer();
-                Ok(())
-            }
             None => Err(KadError::Closed(1)),
         }
     }
@@ -1358,8 +1354,6 @@ where
         });
     }
 
-    fn handle_refresh_timer(&mut self) {}
-
     // When bootstrap is finished, we start a timer to refresh the routing table. Actually
     // it will trigger the periodic bootstrap procedure in a fixed interval.
     fn handle_refresh_stage(&mut self, stage: RefreshStage) {
@@ -1368,14 +1362,21 @@ where
                 let local_id = self.kbuckets.self_key().preimage().clone();
                 let mut poster = self.poster();
 
-                self.get_closest_peers(local_id.into(), |_| {
+                self.get_closest_peers(local_id.into(), |r| {
+                    if r.is_err() {
+                        log::info!("refresh get_closest_peers failed: {:?}", r);
+                        return;
+                    }
                     task::spawn(async move {
                         let _ = poster.post(ProtocolEvent::Refresh(RefreshStage::SelfQueryDone)).await;
                     });
                 });
             }
             RefreshStage::SelfQueryDone => {
-                log::debug!("bootstrap: self-query done, proceed with random walk");
+                log::debug!("bootstrap: self-query done, proceeding with random walk");
+
+                // always mark bootstrapped as true if we step into this stage
+                self.bootstrapped = true;
 
                 let self_key = self.kbuckets.self_key().clone();
                 // The lookup for the local key finished. To complete the bootstrap process,

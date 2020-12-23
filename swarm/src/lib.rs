@@ -123,8 +123,10 @@ pub enum SwarmEvent {
     },
     /// A new substream opened.
     StreamOpened {
-        /// The sub stream.
-        sub_stream: Substream,
+        /// The connection Id of the sub stream.
+        cid: ConnectionId,
+        /// The stream Id of the sub stream.
+        sid: StreamId,
     },
     /// An error happened on a connection during its initial handshake.
     ///
@@ -470,8 +472,8 @@ impl Swarm {
             SwarmEvent::StreamError { .. } => {
                 // TODO: add statistics
             }
-            SwarmEvent::StreamOpened { sub_stream } => {
-                let _ = self.handle_stream_opened(sub_stream);
+            SwarmEvent::StreamOpened { cid, sid } => {
+                let _ = self.handle_stream_opened(cid, sid);
             }
             SwarmEvent::PingResult { cid, result } => {
                 let _ = self.handle_ping_result(cid, result);
@@ -781,7 +783,9 @@ impl Swarm {
         // then check addrs, return error if none when DHT is not enabled
         let r = self.peer_store.get_addr(&peer_id);
         let addrs = match r {
-            Some(l) if !l.is_empty() => dial::EitherDialAddr::Addresses(l.into_iter().map(|r| r.into_maddr()).collect()),
+            Some(l) if !l.is_empty() => {
+                dial::EitherDialAddr::Addresses(l.into_iter().map(|r| r.into_maddr()).collect())
+            },
             _ => {
                 // if DHT is NOT enabled, reply with NoAddresses
                 if !use_dht
@@ -1040,8 +1044,8 @@ impl Swarm {
                                 let rpid = stream_muxer.remote_peer();
                                 let ci = ConnectInfo { la, ra, rpid };
                                 let stream = Substream::new(raw_stream, metric, Direction::Inbound, proto, cid, ci, ctrl);
-                                let sub_stream = stream.clone();
-                                let _ = tx.send(SwarmEvent::StreamOpened { sub_stream }).await;
+                                let sid = stream.id();
+                                let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
 
                                 // anyway, start handler task
                                 task::spawn(async move {
@@ -1111,12 +1115,11 @@ impl Swarm {
     /// Handles opening stream
     ///
     /// Use channel to received message that sent by another task
-    fn handle_stream_opened(&mut self, sub_stream: Substream) -> Result<()> {
-        log::trace!("handle_stream_opened: {:?}", sub_stream);
-        let cid = sub_stream.cid();
+    fn handle_stream_opened(&mut self, cid: ConnectionId, sid: StreamId) -> Result<()> {
+        log::trace!("handle_stream_opened: {:?}/{:?}", cid, sid);
         // add stream id to the connection substream list
         if let Some(c) = self.connections_by_id.get_mut(&cid) {
-            c.add_stream(sub_stream)
+            c.add_stream(sid)
         };
         Ok(())
     }

@@ -30,16 +30,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{fmt, io};
 
-pub const ADDRESS_TTL: Duration = Duration::from_secs(3600);
-pub const TEMP_ADDR_TTL: Duration = Duration::from_secs(120);
-pub const PROVIDER_ADDR_TTL: Duration = Duration::from_secs(600);
-pub const RECENTLY_CONNECTED_ADDR_TTL: Duration = Duration::from_secs(600);
-pub const OWN_OBSERVED_ADDR_TTL: Duration = Duration::from_secs(600);
+pub const ADDRESS_TTL: Duration = Duration::from_secs(1 * 60 * 60);
+pub const TEMP_ADDR_TTL: Duration = Duration::from_secs(2 * 60);
+pub const PROVIDER_ADDR_TTL: Duration = Duration::from_secs(10 * 60);
+pub const RECENTLY_CONNECTED_ADDR_TTL: Duration = Duration::from_secs(10 * 60);
+pub const OWN_OBSERVED_ADDR_TTL: Duration = Duration::from_secs(10 * 60);
 
-pub const PERMANENT_ADDR_TTL: Duration = Duration::from_secs((1 << 63) - 1);
-pub const CONNECTED_ADDR_TTL: Duration = Duration::from_secs((1 << 63) - 2);
+pub const PERMANENT_ADDR_TTL: Duration = Duration::from_secs(u64::MAX - 1);
+pub const CONNECTED_ADDR_TTL: Duration = Duration::from_secs(u64::MAX - 2);
 
-pub const GC_PURGE_INTERVAL: Duration = Duration::from_secs(600);
+pub const GC_PURGE_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Default, Clone)]
 pub struct PeerStore {
@@ -120,9 +120,10 @@ impl PeerStore {
         guard.keys.get_key(peer_id).cloned()
     }
 
-    pub fn get_all_peer_id(&self) -> Vec<PeerId> {
+    /// Get all peer Ids in peer store.
+    pub fn get_all_peers(&self) -> Vec<PeerId> {
         let guard = self.inner.lock().unwrap();
-        guard.addrs.get_all_peer()
+        guard.addrs.get_all_peers()
     }
 
     /// Add address to address_book by peer_id, if exists, update rtt.
@@ -194,7 +195,7 @@ impl PeerStore {
         loop {
             log::info!("GC is looping...");
             async_std::task::sleep(GC_PURGE_INTERVAL).await;
-            let pid_addr = self.get_all_peer_id();
+            let pid_addr = self.get_all_peers();
             if !pid_addr.is_empty() {
                 for id in pid_addr {
                     self.remove_expired_addr(&id);
@@ -331,8 +332,8 @@ impl AddrBook {
         self.addr_book.get(peer_id)
     }
 
-    fn get_all_peer(&self) -> Vec<PeerId> {
-        self.addr_book.keys().map(|x| x.clone()).collect::<Vec<PeerId>>()
+    fn get_all_peers(&self) -> Vec<PeerId> {
+        self.addr_book.keys().map(|x| x.clone()).collect()
     }
 
     // Update ttl if current_ttl equals old_ttl.

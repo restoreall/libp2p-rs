@@ -27,6 +27,7 @@ use async_std::task;
 
 use libp2prs_core::{Multiaddr, PeerId};
 use libp2prs_swarm::Control as SwarmControl;
+use libp2prs_core::peerstore::{PROVIDER_ADDR_TTL, TEMP_ADDR_TTL};
 
 use crate::kbucket::{Distance, Key};
 use crate::{record, KadError, ALPHA_VALUE, BETA_VALUE, K_VALUE};
@@ -34,7 +35,6 @@ use crate::{record, KadError, ALPHA_VALUE, BETA_VALUE, K_VALUE};
 use crate::kad::{KadPoster, MessengerManager};
 use crate::protocol::{KadConnectionType, KadPeer, ProtocolEvent};
 use crate::task_limit::TaskLimiter;
-use libp2prs_core::peerstore::{PROVIDER_ADDR_TTL, TEMP_ADDR_TTL};
 
 type Result<T> = std::result::Result<T, KadError>;
 
