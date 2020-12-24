@@ -214,7 +214,7 @@ impl TransportListener for TcpTransListener {
     }
 
     fn multi_addr(&self) -> Vec<Multiaddr> {
-        vec![self.ma.clone()]
+        self.listen_addrs.clone()
     }
 }
 /// Wraps around a `TcpStream` and adds logging for important events.
