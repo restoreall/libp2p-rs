@@ -128,6 +128,9 @@ fn run_server() {
 
                 println!("Metric: {:?} {:?}", swarm.get_recv_count_and_size(), swarm.get_sent_count_and_size());
 
+                let addresses = swarm.retrieve_all_addrs().await;
+                println!("Addresses: {:?}", addresses);
+
                 //println!("AddrBook: {:?}", swarm.get_addrs_vec());
             });
             CmdExeCode::Ok

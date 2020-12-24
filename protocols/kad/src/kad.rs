@@ -95,11 +95,11 @@ pub struct Kademlia<TStore> {
     /// How long to ping/check a Kad peer since last time we talk to them.
     check_kad_peer_interval: Duration,
 
-    // /// Queued events to return when the behaviour is being polled.
-    // queued_events: VecDeque<NetworkBehaviourAction<KademliaHandlerIn<QueryId>, KademliaEvent>>,
     /// The currently known addresses of the local node.
-    /// TODO: We need observed addr.
-    local_addrs: FnvHashSet<Multiaddr>,
+    ///
+    /// The addresses come from Swarm when initializing Kademlia.
+    /// TODO: The addresses might change for some reason (f.g., interface up/down)
+    local_addrs: Vec<Multiaddr>,
 
     /// The record storage.
     store: TStore,
@@ -387,7 +387,7 @@ where
             provider_record_ttl: config.provider_record_ttl,
             connection_idle_timeout: config.connection_idle_timeout,
             check_kad_peer_interval: config.check_kad_peer_interval,
-            local_addrs: FnvHashSet::default(),
+            local_addrs: vec![],
         }
     }
 
@@ -847,8 +847,7 @@ where
         }
         let config = self.query_config.clone();
         let messengers = self.messengers.clone().expect("must be Some");
-
-        let addresses = self.local_addrs.iter().cloned().collect::<Vec<_>>();
+        let addresses = self.local_addrs.clone();
 
         // initiate the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(key, move |peers| {
@@ -875,8 +874,11 @@ where
     /// result.
     fn find_closest<T: Clone>(&mut self, target: &kbucket::Key<T>, source: &PeerId) -> Vec<KadPeer> {
         if target == self.kbuckets.self_key() {
-            // TODO: fill it with self?
-            Vec::new()
+            vec![KadPeer {
+                node_id: self.kbuckets.self_key().preimage().clone(),
+                multiaddrs: vec![],
+                connection_ty: KadConnectionType::Connected
+            }]
         } else {
             let connected = &self.connected_peers;
             let swarm = self.swarm.as_ref().expect("must be Some");
@@ -928,9 +930,8 @@ where
                     // try to find addresses in the routing table, as was
                     // done before provider records were stored along with
                     // their addresses.
-                    // TODO: local_addrs
                     let multiaddrs = if &node_id == kbuckets.self_key().preimage() {
-                        Some(local_addrs.iter().cloned().collect::<Vec<_>>())
+                        Some(local_addrs.clone())
                     } else {
                         swarm.get_addrs_vec(&node_id)
                     }
@@ -1128,6 +1129,10 @@ where
         // well, self 'move' explicitly,
         let mut kad = self;
         task::spawn(async move {
+            // As we get Swarm control, try getting Swarm self addresses
+            let swarm = kad.swarm.as_mut().expect("must be Some");
+            kad.local_addrs = swarm.retrieve_all_addrs().await.expect("listen addrs > 0");
+
             let _ = kad.process_loop().await;
         });
     }
