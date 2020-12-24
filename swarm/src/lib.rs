@@ -623,7 +623,7 @@ impl Swarm {
 
     ///
     fn on_retrieve_own_addresses(&mut self, f: impl FnOnce(Result<Vec<Multiaddr>>)) -> Result<()> {
-        f(Ok(self.get_own_addrs()));
+        f(Ok(self.get_self_addrs()));
         Ok(())
     }
 
@@ -680,7 +680,7 @@ impl Swarm {
             .collect();
 
         let public_key = self.peer_store.get_key(self.local_peer_id()).unwrap().clone();
-        let listen_addrs = self.get_own_addrs();
+        let listen_addrs = self.get_self_addrs();
 
         // TODO: complete it with protocol_version and agent_version, listen_addrs: listen_address + external_address?
         IdentifyInfo {
@@ -730,14 +730,14 @@ impl Swarm {
             }
         }
     */
-    fn get_own_addrs(&self) -> Vec<Multiaddr> {
+    fn get_self_addrs(&self) -> Vec<Multiaddr> {
         // build self addrs with the self.listened_addrs + self.external_addrs
         let mut listen_addrs = self.external_addrs.iter().cloned().collect::<Vec<_>>();
         listen_addrs.extend(self.listened_addrs.to_vec());
 
         listen_addrs.dedup();
 
-        log::debug!("swarm own addresses: {:?}", listen_addrs);
+        log::debug!("swarm self addresses: {:?}", listen_addrs);
 
         listen_addrs
     }
@@ -745,7 +745,7 @@ impl Swarm {
     fn add_listen_addr(&mut self, addr: Multiaddr) -> Result<()> {
         let mut transport = self.transports.lookup_by_addr(addr.clone())?;
         let mut listener = transport.listen_on(addr)?;
-        self.listened_addrs.push(listener.multi_addr());
+        self.listened_addrs.extend(listener.multi_addr());
 
         let mut tx = self.event_sender.clone();
         // start a task for this listener

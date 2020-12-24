@@ -49,6 +49,8 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
+use if_addrs::{IfAddr, get_if_addrs};
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
 /// Represents the configuration for a TCP/IP transport capability for libp2p.
 ///
@@ -114,8 +116,21 @@ impl Transport for TcpConfig {
         let local_addr = listener.local_addr()?;
         let port = local_addr.port();
 
+        // Determine all our listen addresses which is either a single local IP address
+        // or (if a wildcard IP address was used) the addresses of all our interfaces,
+        // as reported by `get_if_addrs`.
+        let listen_addrs =
+            if socket_addr.ip().is_unspecified() {
+                let addrs = host_addresses(port)?;
+
+                addrs.into_iter().map(|(_,_,ma)|ma).collect()
+            } else {
+                let ma = ip_to_multiaddr(local_addr.ip(), port);
+                vec![ma]
+            };
+
         let ma = ip_to_multiaddr(local_addr.ip(), port);
-        debug!("Listening on {:?}", ma);
+        debug!("Listening on {:?} expanded to {:?}", ma, listen_addrs);
 
         let listener = TcpTransListener {
             inner: listener,
@@ -123,6 +138,7 @@ impl Transport for TcpConfig {
             pause_duration: self.sleep_on_error,
             port,
             ma,
+            listen_addrs,
             config: self.clone(),
         };
 
@@ -175,8 +191,11 @@ pub struct TcpTransListener {
     pause_duration: Duration,
     /// The port which we use as our listen port in listener event addresses.
     port: u16,
-    /// The set of known addresses.
+    /// The listened addresses.
     ma: Multiaddr,
+    /// The listened interface addresses, which are the set of expanded address.
+    /// 0.0.0.0 => multiple interface addresses
+    listen_addrs: Vec<Multiaddr>,
     /// Original configuration.
     config: TcpConfig,
 }
@@ -194,8 +213,8 @@ impl TransportListener for TcpTransListener {
         Ok(TcpTransStream { inner: stream, la, ra })
     }
 
-    fn multi_addr(&self) -> Multiaddr {
-        self.ma.clone()
+    fn multi_addr(&self) -> Vec<Multiaddr> {
+        vec![self.ma.clone()]
     }
 }
 /// Wraps around a `TcpStream` and adds logging for important events.
@@ -285,6 +304,31 @@ fn ip_to_multiaddr(ip: IpAddr, port: u16) -> Multiaddr {
     };
     let it = iter::once(proto).chain(iter::once(Protocol::Tcp(port)));
     Multiaddr::from_iter(it)
+}
+
+// Collect all local host addresses and use the provided port number as listen port.
+fn host_addresses(port: u16) -> io::Result<Vec<(IpAddr, IpNet, Multiaddr)>> {
+    let mut addrs = Vec::new();
+    for iface in get_if_addrs()? {
+        let ip = iface.ip();
+        let ma = ip_to_multiaddr(ip, port);
+        let ipn = match iface.addr {
+            IfAddr::V4(ip4) => {
+                let prefix_len = (!u32::from_be_bytes(ip4.netmask.octets())).leading_zeros();
+                let ipnet = Ipv4Net::new(ip4.ip, prefix_len as u8)
+                    .expect("prefix_len is the number of bits in a u32, so can not exceed 32");
+                IpNet::V4(ipnet)
+            }
+            IfAddr::V6(ip6) => {
+                let prefix_len = (!u128::from_be_bytes(ip6.netmask.octets())).leading_zeros();
+                let ipnet = Ipv6Net::new(ip6.ip, prefix_len as u8)
+                    .expect("prefix_len is the number of bits in a u128, so can not exceed 128");
+                IpNet::V6(ipnet)
+            }
+        };
+        addrs.push((ip, ipn, ma))
+    }
+    Ok(addrs)
 }
 
 #[cfg(test)]
