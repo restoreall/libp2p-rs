@@ -130,7 +130,7 @@ fn parse_proto_msg(msg: impl AsRef<[u8]>) -> Result<(IdentifyInfo, Multiaddr), i
     }
 }
 
-pub(crate) async fn consume_message(mut stream: Substream) -> Result<(IdentifyInfo, Multiaddr), TransportError> {
+pub(crate) async fn process_message(mut stream: Substream) -> Result<(IdentifyInfo, Multiaddr), TransportError> {
     let buf = stream.read_one(4096).await?;
     stream.close2().await?;
 
@@ -273,7 +273,7 @@ impl ProtocolHandler for IdentifyPushHandler {
         let cid = stream.cid();
         log::trace!("Identify Push Protocol handling on {:?}", stream);
 
-        let result = consume_message(stream).await.map_err(TransportError::into);
+        let result = process_message(stream).await.map_err(TransportError::into);
 
         let _ = self.tx.send(SwarmEvent::IdentifyResult { cid, result }).await;
 
@@ -341,7 +341,7 @@ mod tests {
             let socket = MemoryTransport.dial(listener_addr).await.unwrap();
             let socket = Substream::new_with_default(Box::new(socket));
 
-            let (ri, _addr) = identify::consume_message(socket).await.unwrap();
+            let (ri, _addr) = identify::process_message(socket).await.unwrap();
             assert_eq!(ri.public_key, pubkey);
         });
     }
