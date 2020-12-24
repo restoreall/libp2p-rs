@@ -92,6 +92,7 @@ use crate::ping::{PingConfig, PingHandler};
 use crate::protocol_handler::IProtocolHandler;
 use crate::registry::Addresses;
 use crate::substream::{ConnectInfo, StreamId, Substream};
+use libp2prs_core::translation::address_translation;
 
 type Result<T> = std::result::Result<T, SwarmError>;
 
@@ -616,12 +617,12 @@ impl Swarm {
 
     ///
     fn on_retrieve_network_info(&mut self, f: impl FnOnce(Result<NetworkInfo>)) -> Result<()> {
-        f(Ok(self.network_info()));
+        f(Ok(self.get_network_info()));
         Ok(())
     }
     ///
     fn on_retrieve_identify_info(&mut self, f: impl FnOnce(Result<IdentifyInfo>)) -> Result<()> {
-        f(Ok(self.identify_info()));
+        f(Ok(self.get_identify_info()));
         Ok(())
     }
     /// Starts Swarm background task
@@ -638,7 +639,7 @@ impl Swarm {
     // }
     //
     /// Returns network information about the `Swarm`.
-    pub fn network_info(&self) -> NetworkInfo {
+    fn get_network_info(&self) -> NetworkInfo {
         // TODO: add stats later on
         let num_connections_established = self.connections_by_id.len();
         let num_connections_pending = 0; //self.pool.num_pending();
@@ -658,7 +659,7 @@ impl Swarm {
         }
     }
     /// Returns identify information about the `Swarm`.
-    pub fn identify_info(&self) -> IdentifyInfo {
+    fn get_identify_info(&self) -> IdentifyInfo {
         let protocols = self
             .muxer
             .supported_protocols()
@@ -914,25 +915,7 @@ impl Swarm {
     pub fn add_external_address(&mut self, addr: Multiaddr) {
         self.external_addrs.add(addr)
     }
-    /*
-        /// Obtains a view of a [`Peer`] with the given ID in the network.
-        pub fn peer(&mut self, peer_id: TPeerId)
-                    -> Peer<'_, TTrans, TInEvent, TOutEvent, THandler, TConnInfo, TPeerId>
-        {
-            Peer::new(self, peer_id)
-        }
 
-        /// Returns the connection info for an arbitrary connection with the peer, or `None`
-        /// if there is no connection to that peer.
-        // TODO: should take &self instead of &mut self, but the API in network requires &mut
-        pub fn connection_info(&mut self, peer_id: &PeerId) -> Option<TConnInfo> {
-            if let Some(mut n) = self.network.peer(peer_id.clone()).into_connected() {
-                Some(n.some_connection().info().clone())
-            } else {
-                None
-            }
-        }
-    */
     /// Bans a peer by its peer ID.
     ///
     /// Any incoming connection and any dialing attempt will immediately be rejected.
@@ -1211,6 +1194,8 @@ impl Swarm {
                     //let remote_peer_id = c.remote_peer();
                     log::trace!("identify observed_addr: {} info={:?} for {:?}", observed_addr, info, connection);
 
+                    //self.external_addrs
+
                     // Insert remote peer_id and public key into peerstore->KeyBook if non-exist
                     self.peer_store.add_key(&peer_id, remote_pubkey);
 
@@ -1235,6 +1220,37 @@ impl Swarm {
 
     pub fn peer_addrs_add(&mut self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration) {
         self.peer_store.add_addr(peer_id, addr, ttl, false);
+    }
+
+
+    /// Call this function in order to know which address remotes should dial to
+    /// access your local node.
+    ///
+    /// When receiving an observed address on a tcp connection that we initiated, the observed
+    /// address contains our tcp dial port, not our tcp listen port. We know which port we are
+    /// listening on, thereby we can replace the port within the observed address.
+    ///
+    /// When receiving an observed address on a tcp connection that we did **not** initiated, the
+    /// observed address should contain our listening port. In case it differs from our listening
+    /// port there might be a proxy along the path.
+    ///
+    /// # Arguments
+    ///
+    /// * `observed_addr` - should be an address a remote observes you as, which can be obtained for
+    /// example with the identify protocol.
+    ///
+    fn address_translation<'a>(&'a self, observed_addr: &'a Multiaddr)
+                                   -> impl Iterator<Item = Multiaddr> + 'a
+    {
+        let mut addrs: Vec<_> = self.listened_addrs.iter()
+            .filter_map(move |server| address_translation(server, observed_addr))
+            .collect();
+
+        // remove duplicates
+        addrs.sort_unstable();
+        addrs.dedup();
+
+        addrs.into_iter()
     }
 }
 
