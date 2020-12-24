@@ -35,6 +35,8 @@ pub(crate) enum ControlCommand {
     AddNode(PeerId, Vec<Multiaddr>, oneshot::Sender<()>),
     /// Removes a peer from Kad KBuckets, also removes it from Peerstore.
     RemoveNode(PeerId),
+    /// List all bootstrap node
+    ListAllNode,
     /// Lookups the closer peers with given ID, returns a list of peer Id.
     Lookup(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Searches for a peer with given ID, returns a list of peer info
@@ -72,6 +74,14 @@ impl Control {
             .await
             .expect("control send add_node");
         let _ = rx.await.expect("add node reply failed");
+    }
+
+    /// Add a node and its listening addresses to KBuckets.
+    pub async fn remove_node(&mut self, peer_id: PeerId) {
+        self.control_sender
+            .send(ControlCommand::RemoveNode(peer_id))
+            .await
+            .expect("control send remove_node");
     }
 
     /// Initiate bootstrapping.

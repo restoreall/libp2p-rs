@@ -817,6 +817,10 @@ where
         self.try_remove_peer(peer);
     }
 
+    fn list_all_node(&mut self) -> Vec<PeerId> {
+        // self.kbuckets().map(|kp| kp.iter().map(|kb| ));
+    }
+
     /// Performs publishing as a provider of a value for the given key.
     ///
     /// This operation publishes a provider record with the given key and
@@ -1441,6 +1445,9 @@ where
             }
             Some(ControlCommand::RemoveNode(peer)) => {
                 self.remove_node(peer);
+            }
+            Some(ControlCommand::ListAllNode) => {
+                self.list_all_node();
             }
             Some(ControlCommand::Lookup(key, reply)) => {
                 self.get_closest_peers(key, |r| {

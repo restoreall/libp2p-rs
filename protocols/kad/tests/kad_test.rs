@@ -93,11 +93,40 @@ fn setup_kads(n: usize) -> Vec<PeerInfo> {
 
 async fn connect(a: &mut PeerInfo, b: &mut PeerInfo) {
     a.swarm_ctrl.add_addr(&b.pid, b.addr.clone(), Duration::default(), true);
-    a.swarm_ctrl.new_connection(b.pid.clone()).await.expect("new connection");
+    a.swarm_ctrl.new_connection_no_dht(b.pid.clone()).await.expect("new connection");
 
     // add node to KBucket manually
     a.kad_ctrl.add_node(b.pid.clone(), vec![b.addr.clone()]).await;
     b.kad_ctrl.add_node(a.pid.clone(), vec![a.addr.clone()]).await;
+}
+
+async fn bootstrap(node: &mut PeerInfo, seed_node: &mut PeerInfo) {
+    node.kad_ctrl.add_node(seed_node.pid.clone(), vec![seed_node.addr.clone()]).await;
+    node.kad_ctrl.bootstrap().await;
+}
+
+#[test]
+fn test_bootstrap() {
+    fn prop() -> TestResult {
+        task::block_on(async {
+            let infos = setup_kads(3);
+            let mut node0 = infos.get(0).expect("get peer info").clone();
+            let mut node1 = infos.get(1).expect("get peer info").clone();
+            let mut node2 = infos.get(2).expect("get peer info").clone();
+
+            bootstrap(&mut node0, &mut node1).await;
+            bootstrap(&mut node1, &mut node2).await;
+
+            task::sleep(Duration::from_millis(100)).await;
+
+            // expect node2 find node0 via node1
+            node2.swarm_ctrl.new_connection(node0.pid.clone()).await.expect("new connection");
+
+            TestResult::passed()
+        })
+    }
+    // env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    QuickCheck::new().tests(10).quickcheck(prop as fn() -> _);
 }
 
 #[test]
