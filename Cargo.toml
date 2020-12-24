@@ -58,6 +58,7 @@ rustls = "0.18.0"
 structopt = "0.3.9"
 async-std = "1.6"
 webpki = "0.21.2"
+xcli = "0.2.0"
 
 
 [target.'cfg(unix)'.dev-dependencies]

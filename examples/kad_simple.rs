@@ -25,16 +25,25 @@ extern crate lazy_static;
 use libp2prs_core::identity::Keypair;
 use libp2prs_core::transport::upgrade::TransportUpgrade;
 use libp2prs_core::upgrade::Selector;
-use libp2prs_core::Multiaddr;
+use libp2prs_core::{Multiaddr, PeerId};
 use libp2prs_mplex as mplex;
 use libp2prs_secio as secio;
 use libp2prs_swarm::identify::IdentifyConfig;
-use libp2prs_swarm::Swarm;
+use libp2prs_swarm::{Swarm, Control as SwarmControl};
 use libp2prs_tcp::TcpConfig;
 //use libp2prs_traits::{ReadEx, WriteEx};
 use libp2prs_kad::kad::Kademlia;
 use libp2prs_kad::store::MemoryStore;
 use libp2prs_yamux as yamux;
+use libp2prs_kad::Control as KadControl;
+
+use xcli::*;
+
+struct MyCliData {
+    kad: KadControl,
+    swarm: SwarmControl,
+}
+
 
 fn main() {
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -74,12 +83,55 @@ fn run_server() {
     let store = MemoryStore::new(swarm.local_peer_id().clone());
     let kad = Kademlia::new(swarm.local_peer_id().clone(), store);
 
+    let kad_control = kad.control();
+
     swarm = swarm.with_protocol(Box::new(kad.handler()));
-    kad.start(swarm_control);
+    kad.start(swarm_control.clone());
 
     swarm.start();
 
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(5));
-    }
+    // now preprare CLI and run it
+    let mydata = MyCliData {
+        kad: kad_control,
+        swarm: swarm_control,
+    };
+
+    let mut app = App::new("xCLI", mydata)
+        .version("v0.1")
+        .author("kingwel.xie@139.com");
+
+    app.add_subcommand(Command::new("qwert")
+        .about("controls testing features")
+        .usage("qwert")
+        .action(|app, _| -> CmdExeCode {
+            let userdata = app.get_userdata();
+            let mut kad = userdata.kad.clone();
+            async_std::task::block_on(async {
+                let peer = PeerId::random();
+                let r = kad.find_peer(&peer).await;
+
+                println!("FindPeer: {:?}", r);
+            });
+
+            println!("qwert tested");
+            CmdExeCode::Ok
+        }));
+    app.add_subcommand(Command::new("swarm")
+        .about("show Swarm information")
+        .usage("swarm")
+        .action(|app, _| -> CmdExeCode {
+            let userdata = app.get_userdata();
+            let mut swarm = userdata.swarm.clone();
+            async_std::task::block_on(async {
+                let r = swarm.retrieve_networkinfo().await;
+                println!("NetworkInfo: {:?}", r);
+
+                println!("Metric: {:?} {:?}", swarm.get_recv_count_and_size(), swarm.get_sent_count_and_size());
+
+                //println!("AddrBook: {:?}", swarm.get_addrs_vec());
+            });
+            CmdExeCode::Ok
+        }));
+
+    app.run();
 }
