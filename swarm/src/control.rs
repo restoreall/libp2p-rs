@@ -59,9 +59,11 @@ pub enum SwarmControlCmd {
     CloseStream(ConnectionId, StreamId),
     /// Close the whole connection.
     CloseSwarm,
-    /// Retrieve network information of Swarm
+    /// Retrieve the self multi addresses of Swarm.
+    SelfAddresses(oneshot::Sender<Result<Vec<Multiaddr>>>),
+    /// Retrieve network information of Swarm.
     NetworkInfo(oneshot::Sender<Result<NetworkInfo>>),
-    /// Retrieve network information of Swarm
+    /// Retrieve network information of Swarm.
     IdentifyInfo(oneshot::Sender<Result<IdentifyInfo>>),
 }
 
@@ -150,6 +152,16 @@ impl Control {
     pub async fn new_stream_no_dht(&mut self, peer_id: PeerId, pids: Vec<ProtocolId>) -> Result<Substream> {
         let (tx, rx) = oneshot::channel();
         self.sender.send(SwarmControlCmd::NewStream(peer_id, pids, false, tx)).await?;
+        rx.await?
+    }
+
+    /// Retrieve the all listened addresses from Swarm.
+    ///
+    /// All listened addresses on interface and the observed addresses
+    /// from Identify protocol.
+    pub async fn retrieve_all_addrs(&mut self) -> Result<Vec<Multiaddr>> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(SwarmControlCmd::SelfAddresses(tx)).await?;
         rx.await?
     }
 

@@ -516,6 +516,12 @@ impl Swarm {
                 // got the connection_id, try closing a new sub stream
                 let _ = self.on_close_stream(cid, sid);
             }
+            SwarmControlCmd::SelfAddresses(reply) => {
+                // Received from channel, try retrieving identify info
+                let _ = self.on_retrieve_own_addresses(|r| {
+                    let _ = reply.send(r);
+                });
+            }
             SwarmControlCmd::NetworkInfo(reply) => {
                 // Received from channel, try retrieving network info
                 let _ = self.on_retrieve_network_info(|r| {
@@ -616,6 +622,12 @@ impl Swarm {
     }
 
     ///
+    fn on_retrieve_own_addresses(&mut self, f: impl FnOnce(Result<Vec<Multiaddr>>)) -> Result<()> {
+        f(Ok(self.get_self_addrs()));
+        Ok(())
+    }
+
+    ///
     fn on_retrieve_network_info(&mut self, f: impl FnOnce(Result<NetworkInfo>)) -> Result<()> {
         f(Ok(self.get_network_info()));
         Ok(())
@@ -668,13 +680,14 @@ impl Swarm {
             .collect();
 
         let public_key = self.peer_store.get_key(self.local_peer_id()).unwrap().clone();
+        let listen_addrs = self.get_self_addrs();
 
-        // TODO: complete it with protocol_version and agent_version
+        // TODO: complete it with protocol_version and agent_version, listen_addrs: listen_address + external_address?
         IdentifyInfo {
             public_key,
             protocol_version: "".to_string(),
             agent_version: "abc".to_string(),
-            listen_addrs: self.listened_addrs.to_vec(),
+            listen_addrs,
             protocols,
         }
     }
@@ -717,10 +730,22 @@ impl Swarm {
             }
         }
     */
+    fn get_self_addrs(&self) -> Vec<Multiaddr> {
+        // build self addrs with the self.listened_addrs + self.external_addrs
+        let mut listen_addrs = self.external_addrs.iter().cloned().collect::<Vec<_>>();
+        listen_addrs.extend(self.listened_addrs.to_vec());
+
+        listen_addrs.dedup();
+
+        log::debug!("swarm self addresses: {:?}", listen_addrs);
+
+        listen_addrs
+    }
+
     fn add_listen_addr(&mut self, addr: Multiaddr) -> Result<()> {
         let mut transport = self.transports.lookup_by_addr(addr.clone())?;
         let mut listener = transport.listen_on(addr)?;
-        self.listened_addrs.push(listener.multi_addr());
+        self.listened_addrs.extend(listener.multi_addr());
 
         let mut tx = self.event_sender.clone();
         // start a task for this listener
@@ -908,14 +933,6 @@ impl Swarm {
         &self.local_peer_id
     }
 
-    /// Adds an external address.
-    ///
-    /// An external address is an address we are listening on but that accounts for things such as
-    /// NAT traversal.
-    pub fn add_external_address(&mut self, addr: Multiaddr) {
-        self.external_addrs.add(addr)
-    }
-
     /// Bans a peer by its peer ID.
     ///
     /// Any incoming connection and any dialing attempt will immediately be rejected.
@@ -952,8 +969,6 @@ impl Swarm {
         // TODO: generate a connected event
 
         // TODO: return the connection
-
-        // start Ping service if need
     }
 
     /// Handles a new connection.
@@ -1011,8 +1026,7 @@ impl Swarm {
                 let r = stream_muxer.accept_stream().await;
 
                 // TODO: probably we should spawn a new task for protocol selection
-                // But in go-libp2p, the protocol selection is done in a blocking way...
-
+                // As a fact, in go-libp2p, the protocol selection is done in a blocking way...
                 match r {
                     Ok(raw_stream) => {
                         // well, got the raw stream, now do protocol selection
@@ -1181,10 +1195,22 @@ impl Swarm {
         Ok(())
     }
 
+    fn handle_observed_address(&mut self, observed_addr: Multiaddr, cid: ConnectionId) {
+        log::trace!("identify observed_addr: {} cid={:?}", observed_addr, cid);
+
+        let addrs = self.address_translation(&observed_addr).collect::<Vec<_>>();
+
+        for addr in addrs {
+            self.external_addrs.add(addr);
+        }
+
+        log::debug!("external address: {:?}", self.external_addrs)
+    }
+
     /// Received result which contains IdentityInfo and multiaddr,
     /// and then updates keybook and protobook in peerstore.
     fn handle_identify_result(&mut self, cid: ConnectionId, result: Result<(IdentifyInfo, Multiaddr)>) -> Result<()> {
-        log::trace!("handle_identify_result: {:?}", cid);
+        log::debug!("handle_identify_result: {:?}", cid);
 
         if let Some(connection) = self.connections_by_id.get_mut(&cid) {
             match result {
@@ -1192,14 +1218,14 @@ impl Swarm {
                     let remote_pubkey = connection.stream_muxer().remote_pub_key();
                     let peer_id = connection.stream_muxer().remote_peer();
                     //let remote_peer_id = c.remote_peer();
-                    log::trace!("identify observed_addr: {} info={:?} for {:?}", observed_addr, info, connection);
 
-                    //self.external_addrs
+                    self.handle_observed_address(observed_addr, cid);
 
                     // Insert remote peer_id and public key into peerstore->KeyBook if non-exist
                     self.peer_store.add_key(&peer_id, remote_pubkey);
 
-                    // update peer store with the
+                    log::debug!("identified addresses {:?} protocols {:?} for {}", info.listen_addrs, info.protocols, peer_id);
+                    // update peerstore with the listening addresses and protocols of the remote peer
                     // self.peer_store.add_addr(&peer_id, connection.remote_addr(), ADDRESS_TTL, false);
                     self.peer_store.add_addrs(&peer_id, info.listen_addrs, ADDRESS_TTL, false);
                     self.peer_store.add_protocol(&peer_id, info.protocols);
