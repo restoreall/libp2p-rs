@@ -383,7 +383,7 @@ impl Connection {
                 Ok(stream) => {
                     let sid = stream.id();
                     let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
-                    identify::consume_message(stream).await
+                    identify::process_message(stream).await
                 }
                 Err(err) => {
                     // looks like the peer doesn't support the protocol
