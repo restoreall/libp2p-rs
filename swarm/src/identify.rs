@@ -46,7 +46,7 @@ use std::{error::Error, io};
 
 use libp2prs_core::transport::TransportError;
 use libp2prs_core::upgrade::UpgradeInfo;
-use libp2prs_core::{Multiaddr, PublicKey};
+use libp2prs_core::{Multiaddr, PublicKey, ProtocolId};
 use libp2prs_traits::{ReadEx, WriteEx};
 
 use crate::connection::Connection;
@@ -187,9 +187,9 @@ impl IdentifyHandler {
 }
 
 impl UpgradeInfo for IdentifyHandler {
-    type Info = &'static [u8];
+    type Info = ProtocolId;
     fn protocol_info(&self) -> Vec<Self::Info> {
-        vec![IDENTIFY_PROTOCOL]
+        vec![IDENTIFY_PROTOCOL.into()]
     }
 }
 
@@ -251,9 +251,9 @@ impl IdentifyPushHandler {
 }
 
 impl UpgradeInfo for IdentifyPushHandler {
-    type Info = &'static [u8];
+    type Info = ProtocolId;
     fn protocol_info(&self) -> Vec<Self::Info> {
-        vec![IDENTIFY_PUSH_PROTOCOL]
+        vec![IDENTIFY_PUSH_PROTOCOL.into()]
     }
 }
 

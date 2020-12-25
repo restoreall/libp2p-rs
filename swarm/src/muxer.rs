@@ -22,7 +22,6 @@ use fnv::FnvHashMap;
 use libp2prs_core::multistream::Negotiator;
 use libp2prs_core::muxing::IReadWrite;
 use libp2prs_core::transport::TransportError;
-use libp2prs_core::upgrade::ProtocolName;
 
 use crate::protocol_handler::IProtocolHandler;
 use crate::ProtocolId;
@@ -66,15 +65,15 @@ impl Muxer {
     pub(crate) fn add_protocol_handler(&mut self, p: IProtocolHandler) {
         log::trace!(
             "adding protocol handler: {:?}",
-            p.protocol_info().iter().map(|n| n.protocol_name_str()).collect::<Vec<_>>()
+            p.protocol_info()
         );
         p.protocol_info().iter().for_each(|pid| {
-            self.protocol_handlers.insert(pid, p.clone());
+            self.protocol_handlers.insert(pid.clone(), p.clone());
         });
     }
 
     pub(crate) fn supported_protocols(&self) -> impl IntoIterator<Item = ProtocolId> + '_ {
-        self.protocol_handlers.keys().copied().map(|k| <&[u8]>::clone(&k))
+        self.protocol_handlers.keys().map(|k| k.clone())
     }
 
     pub(crate) async fn select_inbound(
@@ -85,9 +84,9 @@ impl Muxer {
         let negotiator = Negotiator::new_with_protocols(protocols);
 
         let (proto, socket) = negotiator.negotiate(socket).await?;
-        let handler = self.protocol_handlers.get_mut(proto.as_ref()).unwrap().clone();
+        let handler = self.protocol_handlers.get_mut(&proto).unwrap().clone();
 
-        log::info!("select_inbound {:?}", proto.protocol_name_str());
+        log::info!("select_inbound {:?}", proto);
 
         Ok((handler as IProtocolHandler, socket, proto))
     }

@@ -34,7 +34,7 @@ use futures::{
 use async_std::task;
 use async_std::task::JoinHandle;
 
-use libp2prs_core::{Multiaddr, PeerId};
+use libp2prs_core::{Multiaddr, PeerId, ProtocolId};
 use libp2prs_swarm::Control as SwarmControl;
 
 use crate::control::{Control, ControlCommand};
@@ -174,7 +174,7 @@ impl KademliaConfig {
     /// Kademlia nodes only communicate with other nodes using the same protocol
     /// name. Using a custom name therefore allows to segregate the DHT from
     /// others, if that is desired.
-    pub fn set_protocol_name(&mut self, name: &'static [u8]) -> &mut Self {
+    pub fn set_protocol_name(&mut self, name: ProtocolId) -> &mut Self {
         self.protocol_config.set_protocol_name(name);
         self
     }

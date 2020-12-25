@@ -42,7 +42,6 @@ use libp2prs_core::identity::Keypair;
 use libp2prs_core::multistream::Negotiator;
 use libp2prs_core::muxing::IStreamMuxer;
 use libp2prs_core::transport::TransportError;
-use libp2prs_core::upgrade::ProtocolName;
 use libp2prs_core::PublicKey;
 
 use crate::control::SwarmControlCmd;
@@ -296,7 +295,7 @@ impl Connection {
         let stream_muxer = self.stream_muxer.clone();
         let mut tx = self.tx.clone();
         let flag = self.ping_running.clone();
-        let pids = vec![PING_PROTOCOL];
+        let pids = vec![PING_PROTOCOL.into()];
         let ctrl = self.ctrl.clone();
         let metric = self.metric.clone();
 
@@ -374,7 +373,7 @@ impl Connection {
         let stream_muxer = self.stream_muxer.clone();
         let mut tx = self.tx.clone();
         let ctrl = self.ctrl.clone();
-        let pids = vec![IDENTIFY_PROTOCOL];
+        let pids = vec![IDENTIFY_PROTOCOL.into()];
         let metric = self.metric.clone();
 
         let handle = task::spawn(async move {
@@ -415,7 +414,7 @@ impl Connection {
     pub(crate) fn start_identify_push(&mut self) {
         let cid = self.id();
         let stream_muxer = self.stream_muxer.clone();
-        let pids = vec![IDENTIFY_PUSH_PROTOCOL];
+        let pids = vec![IDENTIFY_PUSH_PROTOCOL.into()];
         let metric = self.metric.clone();
 
         let mut ctrl = self.ctrl.clone();
@@ -483,7 +482,7 @@ async fn open_stream_internal(
     metric: Arc<Metric>,
 ) -> Result<Substream, TransportError> {
 
-    log::debug!("about to open substream on {:?} {:?}", cid, pids.iter().map(|p| p.protocol_name_str()).collect::<Vec<_>>());
+    log::debug!("about to open substream on {:?} {:?}", cid, pids);
 
     let raw_stream = stream_muxer.open_stream().await?;
     let la = stream_muxer.local_multiaddr();
@@ -496,7 +495,7 @@ async fn open_stream_internal(
 
     match result {
         Ok((proto, raw_stream)) => {
-            log::debug!("selected outbound {:?} {:?}", cid, proto.protocol_name_str());
+            log::debug!("selected outbound {:?} {:?}", cid, proto);
 
             let ci = ConnectInfo { la, ra, rpid };
             let stream = Substream::new(raw_stream, metric.clone(), Direction::Outbound, proto, cid, ci, ctrl);

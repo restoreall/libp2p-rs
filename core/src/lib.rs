@@ -57,6 +57,7 @@ pub use transport::Transport;
 pub mod muxing;
 pub mod secure_io;
 pub mod upgrade;
+pub use upgrade::ProtocolId;
 
 pub mod either;
 

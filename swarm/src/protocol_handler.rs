@@ -49,7 +49,7 @@
 //!
 
 use async_trait::async_trait;
-use libp2prs_core::upgrade::{ProtocolName, UpgradeInfo};
+use libp2prs_core::upgrade::UpgradeInfo;
 use libp2prs_core::PeerId;
 use std::error::Error;
 
@@ -103,9 +103,9 @@ impl DummyProtocolHandler {
 }
 
 impl UpgradeInfo for DummyProtocolHandler {
-    type Info = &'static [u8];
+    type Info = ProtocolId;
     fn protocol_info(&self) -> Vec<Self::Info> {
-        vec![b"/dummy/1.0.0", b"/dummy/2.0.0"]
+        vec![ProtocolId::from(b"/dummy/1.0.0" as &[u8]), ProtocolId::from(b"/dummy/2.0.0" as &[u8])]
     }
 }
 
@@ -114,7 +114,7 @@ impl Notifiee for DummyProtocolHandler {}
 #[async_trait]
 impl ProtocolHandler for DummyProtocolHandler {
     async fn handle(&mut self, stream: Substream, info: <Self as UpgradeInfo>::Info) -> Result<(), Box<dyn Error>> {
-        log::trace!("Dummy Protocol handling inbound {:?} {:?}", stream, info.protocol_name_str());
+        log::trace!("Dummy Protocol handling inbound {:?} {:?}", stream, info);
         Ok(())
     }
     fn box_clone(&self) -> IProtocolHandler {

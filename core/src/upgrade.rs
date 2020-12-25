@@ -52,7 +52,6 @@
 //!
 
 use async_trait::async_trait;
-use std::borrow::Cow;
 
 use crate::transport::TransportError;
 
@@ -61,6 +60,8 @@ pub(crate) mod multistream;
 pub(crate) mod select;
 
 pub use self::{dummy::DummyUpgrader, select::Selector};
+use bytes::Bytes;
+use std::fmt;
 
 /// Types serving as protocol names.
 ///
@@ -101,10 +102,6 @@ pub trait ProtocolName {
     /// **Note:** Valid protocol names must start with `/` and
     /// not exceed 140 bytes in length.
     fn protocol_name(&self) -> &[u8];
-    /// The protocol name as a String, convenience for debugging output.
-    fn protocol_name_str(&self) -> Cow<str> {
-        String::from_utf8_lossy(self.protocol_name())
-    }
 }
 
 impl<T: AsRef<[u8]>> ProtocolName for T {
@@ -113,9 +110,51 @@ impl<T: AsRef<[u8]>> ProtocolName for T {
     }
 }
 
+
+#[derive(Clone, PartialOrd, PartialEq, Eq, Hash)]
+pub struct ProtocolId(Bytes);
+
+
+impl fmt::Debug for ProtocolId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(&self.0))
+    }
+}
+
+impl fmt::Display for ProtocolId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(&self.0))
+    }
+}
+
+// impl ProtocolName for ProtocolId {
+//     fn protocol_name(&self) -> &[u8] {
+//         self.0.as_ref()
+//     }
+// }
+
+impl AsRef<[u8]> for ProtocolId {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+
+impl From<Bytes> for ProtocolId {
+    fn from(value: Bytes) -> Self {
+        ProtocolId(value)
+    }
+}
+
+impl From<&[u8]> for ProtocolId {
+    fn from(value: &[u8]) -> Self {
+        Self::from(Bytes::copy_from_slice(value))
+    }
+}
+
 pub trait UpgradeInfo: Send {
     /// Opaque type representing a negotiable protocol.
-    type Info: ProtocolName + Clone + Send + Sync + std::fmt::Debug;
+    type Info: ProtocolName + Clone + Send + Sync + fmt::Debug;
 
     /// Returns the list of protocols that are supported. Used during the negotiation process.
     fn protocol_info(&self) -> Vec<Self::Info>;

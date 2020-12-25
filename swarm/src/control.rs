@@ -23,7 +23,7 @@ use futures::{
     prelude::*,
 };
 use libp2prs_core::peerstore::{AddrBookRecord, PeerStore};
-use libp2prs_core::{Multiaddr, PeerId, PublicKey};
+use libp2prs_core::{Multiaddr, PeerId, PublicKey, ProtocolId};
 use smallvec::SmallVec;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +33,7 @@ use crate::identify::IdentifyInfo;
 use crate::metrics::metric::Metric;
 use crate::network::NetworkInfo;
 use crate::substream::{StreamId, Substream};
-use crate::{ProtocolId, SwarmError};
+use crate::SwarmError;
 
 type Result<T> = std::result::Result<T, SwarmError>;
 

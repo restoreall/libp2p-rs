@@ -73,12 +73,11 @@ use std::{error, fmt};
 use async_std::task;
 
 use libp2prs_core::peerstore::{PeerStore, ADDRESS_TTL};
-use libp2prs_core::upgrade::ProtocolName;
 use libp2prs_core::{
     multiaddr::{protocol, Multiaddr},
     muxing::IStreamMuxer,
     transport::{upgrade::ITransportEx, TransportError},
-    PeerId, PublicKey,
+    PeerId, ProtocolId, PublicKey,
 };
 
 use crate::connection::{Connection, ConnectionId, ConnectionLimit, Direction};
@@ -242,8 +241,6 @@ impl Transports {
         self.inner.insert(id, transport)
     }
 }
-
-type ProtocolId = &'static [u8];
 
 /// The post-processing callback for Dialer.
 type DialCallback = Box<dyn FnOnce(Result<&mut Connection>) + Send>;
@@ -676,7 +673,7 @@ impl Swarm {
             .muxer
             .supported_protocols()
             .into_iter()
-            .map(|p| p.protocol_name_str().to_string())
+            .map(|p| p.to_string())
             .collect();
 
         let public_key = self.peer_store.get_key(self.local_peer_id()).unwrap().clone();
@@ -1040,7 +1037,7 @@ impl Swarm {
                                 let ra = stream_muxer.remote_multiaddr();
                                 let rpid = stream_muxer.remote_peer();
                                 let ci = ConnectInfo { la, ra, rpid };
-                                let stream = Substream::new(raw_stream, metric, Direction::Inbound, proto, cid, ci, ctrl);
+                                let stream = Substream::new(raw_stream, metric, Direction::Inbound, proto.clone(), cid, ci, ctrl);
                                 let sid = stream.id();
                                 let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
 

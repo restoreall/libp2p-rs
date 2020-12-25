@@ -29,13 +29,12 @@ use super::{
     protocol::{Message, MessageIO, Protocol, ProtocolError, Version},
     ReadEx, WriteEx,
 };
-use crate::upgrade::ProtocolName;
 
 pub struct Negotiator<TProto> {
     protocols: Vec<(TProto, Protocol)>,
 }
 
-impl<TProto: AsRef<[u8]> + Clone> Negotiator<TProto> {
+impl<TProto: AsRef<[u8]> + Clone + fmt::Debug> Negotiator<TProto> {
     pub fn new() -> Self {
         Negotiator { protocols: Vec::new() }
     }
@@ -147,10 +146,10 @@ impl<TProto: AsRef<[u8]> + Clone> Negotiator<TProto> {
                 }
                 Message::NotAvailable => {
                     log::debug!(
-                        "Dialer: Received rejection of protocol: {}",
-                        proto.0.protocol_name_str()
+                        "Dialer: Received rejection of protocol: {:?}",
+                        proto.0
                     );
-                    cause.push(proto.0.protocol_name_str().to_string());
+                    cause.push(format!("{:?}", proto.0));
                     continue;
                 }
                 _ => return Err(ProtocolError::InvalidMessage.into()),
@@ -160,11 +159,11 @@ impl<TProto: AsRef<[u8]> + Clone> Negotiator<TProto> {
     }
 }
 
-impl<TProto: AsRef<[u8]> + Clone> Default for Negotiator<TProto> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// impl<TProto: AsRef<[u8]> + Clone> Default for Negotiator<TProto> {
+//     fn default() -> Self {
+//         Self::new()
+//     }
+// }
 
 #[derive(Debug)]
 pub enum NegotiationError {

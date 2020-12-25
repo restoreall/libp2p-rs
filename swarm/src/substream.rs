@@ -34,7 +34,6 @@ use crate::control::SwarmControlCmd;
 use crate::metrics::metric::Metric;
 use crate::ProtocolId;
 use libp2prs_core::muxing::IReadWrite;
-use libp2prs_core::upgrade::ProtocolName;
 use libp2prs_core::{Multiaddr, PeerId};
 use libp2prs_traits::{ReadEx, WriteEx};
 use std::sync::Arc;
@@ -93,7 +92,7 @@ impl fmt::Debug for Substream {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Substream")
             .field("inner", &self.inner)
-            .field("protocol", &self.info.protocol.protocol_name_str())
+            .field("protocol", &self.info.protocol)
             .field("dir", &self.info.dir)
             .field("cid", &self.info.cid)
             .finish()
@@ -108,7 +107,7 @@ impl Drop for Substream {
             let cid = self.cid();
             let sid = StreamId(inner.id());
             let mut s = self.ctrl.clone();
-            log::trace!("garbage collecting stream {:?}/{:?} {:?}", cid, sid, self.protocol().protocol_name_str());
+            log::trace!("garbage collecting stream {:?}/{:?} {:?}", cid, sid, self.protocol());
 
             async_std::task::spawn(async move {
                 let _ = s.send(SwarmControlCmd::CloseStream(cid, sid)).await;
@@ -138,7 +137,7 @@ impl Substream {
     /// For internal test only
     #[allow(dead_code)]
     pub(crate) fn new_with_default(inner: IReadWrite) -> Self {
-        let protocol = b"/test";
+        let protocol = ProtocolId::from(b"/test" as &[u8]);
         let dir = Direction::Outbound;
         let cid = ConnectionId::default();
         let ci = ConnectInfo {
@@ -156,8 +155,8 @@ impl Substream {
         }
     }
     /// Returns the protocol of the sub stream.
-    pub fn protocol(&self) -> ProtocolId {
-        self.info.protocol
+    pub fn protocol(&self) -> &ProtocolId {
+        &self.info.protocol
     }
     /// Returns the direction of the sub stream.
     pub fn dir(&self) -> Direction {
@@ -186,7 +185,7 @@ impl Substream {
     /// Returns the info of the sub stream.
     pub fn info(&self) -> SubstreamInfo {
         SubstreamInfo {
-            protocol: self.protocol(),
+            protocol: self.protocol().clone(),
             dir: self.dir(),
         }
     }

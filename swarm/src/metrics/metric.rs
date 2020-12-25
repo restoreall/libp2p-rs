@@ -76,14 +76,14 @@ impl Metric {
     }
 
     #[inline]
-    pub(crate) fn log_sent_stream(&self, protocol: ProtocolId, count: usize, peer_id: &PeerId) {
-        self.protocol_out.store_or_modify(&protocol, count, |_, value| value.add(count));
+    pub(crate) fn log_sent_stream(&self, protocol: &ProtocolId, count: usize, peer_id: &PeerId) {
+        self.protocol_out.store_or_modify(protocol, count, |_, value| value.add(count));
         self.peer_out.store_or_modify(peer_id, count, |_, value| value.add(count));
     }
 
     #[inline]
-    pub(crate) fn log_recv_stream(&self, protocol: ProtocolId, count: usize, peer_id: &PeerId) {
-        self.protocol_in.store_or_modify(&protocol, count, |_, value| value.add(count));
+    pub(crate) fn log_recv_stream(&self, protocol: &ProtocolId, count: usize, peer_id: &PeerId) {
+        self.protocol_in.store_or_modify(protocol, count, |_, value| value.add(count));
         self.peer_in.store_or_modify(peer_id, count, |_, value| value.add(count));
     }
 

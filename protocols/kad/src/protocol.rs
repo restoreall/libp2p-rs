@@ -36,7 +36,7 @@ use async_std::task;
 use async_trait::async_trait;
 
 use libp2prs_core::upgrade::UpgradeInfo;
-use libp2prs_core::{Multiaddr, PeerId};
+use libp2prs_core::{Multiaddr, PeerId, ProtocolId};
 use libp2prs_swarm::connection::Connection;
 use libp2prs_swarm::protocol_handler::{IProtocolHandler, Notifiee, ProtocolHandler};
 use libp2prs_swarm::substream::Substream;
@@ -151,8 +151,6 @@ impl Into<PeerId> for KadPeer {
     }
 }
 
-type ProtocolId = &'static [u8];
-
 /// Configuration for a Kademlia protocol handler.
 #[derive(Debug, Clone)]
 pub struct KademliaProtocolConfig {
@@ -185,7 +183,7 @@ impl KademliaProtocolConfig {
 impl Default for KademliaProtocolConfig {
     fn default() -> Self {
         KademliaProtocolConfig {
-            protocol_name: DEFAULT_PROTO_NAME,
+            protocol_name: DEFAULT_PROTO_NAME.into(),
             max_packet_size: DEFAULT_MAX_PACKET_SIZE,
             max_reuse_count: DEFAULT_MAX_REUSE_TRIES,
         }
@@ -231,7 +229,7 @@ impl UpgradeInfo for KadProtocolHandler {
     type Info = ProtocolId;
 
     fn protocol_info(&self) -> Vec<Self::Info> {
-        vec![self.config.protocol_name]
+        vec![self.config.protocol_name.to_owned()]
     }
 }
 
@@ -314,7 +312,7 @@ pub(crate) struct KadMessenger {
 impl KadMessenger {
     pub(crate) async fn build(mut swarm: SwarmControl, peer: PeerId, config: KademliaProtocolConfig) -> Result<Self, KadError> {
         // open a new stream, don't use DHT, as we are parts of DHT
-        let stream = swarm.new_stream_no_dht(peer.clone(), vec![config.protocol_name()]).await?;
+        let stream = swarm.new_stream_no_dht(peer.clone(), vec![config.protocol_name().to_owned()]).await?;
         Ok(Self {
             stream,
             config,
