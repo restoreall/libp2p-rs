@@ -817,8 +817,33 @@ where
         self.try_remove_peer(peer);
     }
 
-    fn list_all_node(&mut self) -> Vec<PeerId> {
-        // self.kbuckets().map(|kp| kp.iter().map(|kb| ));
+    fn list_all_node(&mut self) -> Vec<KadPeer> {
+        let mut peers = Vec::new();
+        let swarm = self.swarm.as_ref().expect("must be Some");
+        let connected = &self.connected_peers;
+        for kbucket in self.kbuckets.iter() {
+            if kbucket.is_empty() {
+                continue;
+            }
+            let mut kp = kbucket.iter()
+                .map(|kb| {
+                    let node_id = kb.node.key.preimage().clone();
+                    let connection_ty = if connected.contains(&node_id) {
+                        KadConnectionType::Connected
+                    } else {
+                        KadConnectionType::NotConnected
+                    };
+                    let multiaddrs = swarm.get_addrs_vec(&node_id).unwrap_or(vec![]);
+                    KadPeer {
+                        node_id,
+                        multiaddrs,
+                        connection_ty,
+                    }
+                })
+                .collect::<Vec<_>>();
+            peers.append(&mut kp);
+        }
+        peers
     }
 
     /// Performs publishing as a provider of a value for the given key.
@@ -1451,8 +1476,8 @@ where
             Some(ControlCommand::RemoveNode(peer)) => {
                 self.remove_node(peer);
             }
-            Some(ControlCommand::ListAllNode) => {
-                self.list_all_node();
+            Some(ControlCommand::ListAllNode(reply)) => {
+                let _ = reply.send(self.list_all_node());
             }
             Some(ControlCommand::Lookup(key, reply)) => {
                 self.get_closest_peers(key, |r| {

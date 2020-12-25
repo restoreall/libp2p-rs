@@ -71,6 +71,22 @@ fn main() {
         .author("kingwel.xie@139.com");
 
     // DHT
+    let bootstrap_cmd = Command::new("bootstrap")
+        .about("Show or edit the list of bootstrap peers")
+        .usage("bootstrap")
+        .action(bootstrap);
+    let add_node_cmd = Command::new("add")
+        .about("Add peer to KBucket")
+        .usage("add [<peer>] [<multi_address>]")
+        .action(add_node);
+    let rm_node_cmd = Command::new("rm")
+        .about("Remove peer from KBucket")
+        .usage("rm [<peer>] [<multi_address>]")
+        .action(rm_node);
+    let list_node_cmd = Command::new("list")
+        .about("List all node from KBucket")
+        .usage("list")
+        .action(list_all_node);
     let find_peer_cmd = Command::new("findpeer")
         .about("find peer through dht")
         .usage("findpeer <peerid>")
@@ -83,23 +99,13 @@ fn main() {
     let dht_cmd = Command::new("dht")
         .about("find peer or record through dht")
         .usage("dht")
+        .subcommand(bootstrap_cmd)
+        .subcommand(add_node_cmd)
+        .subcommand(rm_node_cmd)
+        .subcommand(list_node_cmd)
         .subcommand(find_peer_cmd)
         .subcommand(get_value_cmd);
     app.add_subcommand(dht_cmd);
-
-    // Bootstrap
-    let add_node_cmd = Command::new("add")
-        .about("Add peers to the bootstrap list")
-        .usage("bootstrap add [<peer>]")
-        .action(add_node);
-
-    let bootstrap_cmd = Command::new("bootstrap")
-        .about("Show or edit the list of bootstrap peers")
-        .usage("bootstrap")
-        .subcommand(add_node_cmd);
-    app.add_subcommand(bootstrap_cmd);
-
-
 
     app.add_subcommand(Command::new("swarm")
         .about("show Swarm information")
@@ -107,6 +113,17 @@ fn main() {
         .action(get_network_info));
 
     app.run();
+}
+
+fn bootstrap(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
+    let userdata = app.get_userdata();
+    let mut kad = userdata.kad.clone();
+    task::block_on(async {
+        kad.bootstrap().await;
+        println!("add node completed");
+    });
+
+    CmdExeCode::Ok
 }
 
 fn add_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
@@ -151,7 +168,6 @@ fn rm_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
         Err(e) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
     };
 
-
     let userdata = app.get_userdata();
     let mut kad = userdata.kad.clone();
     task::block_on(async {
@@ -166,8 +182,13 @@ fn list_all_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
     let userdata = app.get_userdata();
     let mut kad = userdata.kad.clone();
     task::block_on(async {
-        kad.remove_node(peer).await;
-        println!("remove node completed");
+        let peers = kad.list_all_node().await;
+        println!("nodes:");
+        for p in peers {
+            println!("{:?}", p);
+        }
+        // can't work, why???
+        // peers.iter().cloned().map(|p| println!("nodes: {:?}", p));
     });
 
     CmdExeCode::Ok
@@ -249,7 +270,7 @@ fn setup_kad(keys: Keypair, listen_addr: Multiaddr) -> (SwarmControl, KadControl
     swarm.start();
 
     let pid = keys.public().into_peer_id();
-    log::info!("I can be reached at: {}/{}", listen_addr, pid);
+    log::info!("I can be reached at: {}/p2p/{}", listen_addr, pid);
 
     (swarm_ctrl, kad_ctrl)
 }

@@ -36,7 +36,7 @@ pub(crate) enum ControlCommand {
     /// Removes a peer from Kad KBuckets, also removes it from Peerstore.
     RemoveNode(PeerId),
     /// List all bootstrap node
-    ListAllNode,
+    ListAllNode(oneshot::Sender<Vec<KadPeer>>),
     /// Lookups the closer peers with given ID, returns a list of peer Id.
     Lookup(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Searches for a peer with given ID, returns a list of peer info
@@ -82,6 +82,15 @@ impl Control {
             .send(ControlCommand::RemoveNode(peer_id))
             .await
             .expect("control send remove_node");
+    }
+
+    pub async fn list_all_node(&mut self) -> Vec<KadPeer> {
+        let (tx, rx) = oneshot::channel();
+        self.control_sender
+            .send(ControlCommand::ListAllNode(tx))
+            .await
+            .expect("control send list_all_node");
+        rx.await.expect("list all node reply failed")
     }
 
     /// Initiate bootstrapping.
