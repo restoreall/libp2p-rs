@@ -18,10 +18,6 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//use async_std::task;
-#[macro_use]
-extern crate lazy_static;
-
 use async_std::task;
 use libp2prs_core::identity::Keypair;
 use libp2prs_core::transport::upgrade::TransportUpgrade;
@@ -37,7 +33,6 @@ use libp2prs_yamux as yamux;
 use libp2prs_kad::Control as KadControl;
 use libp2prs_kad::kad::Kademlia;
 use libp2prs_kad::store::MemoryStore;
-use std::time::Duration;
 use std::str::FromStr;
 
 
@@ -115,7 +110,7 @@ fn main() {
     app.run();
 }
 
-fn bootstrap(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
+fn bootstrap(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
     let userdata = app.get_userdata();
     let mut kad = userdata.kad.clone();
     task::block_on(async {
@@ -139,12 +134,12 @@ fn add_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
 
     let peer = match PeerId::from_str(pid) {
         Ok(p) => p,
-        Err(e) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
+        Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
     };
 
     let address = match Multiaddr::from_str(addr) {
         Ok(a) => a,
-        Err(e) => return CmdExeCode::BadArgument(Some(String::from("invalid multi address")))
+        Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid multi address")))
     };
 
     let userdata = app.get_userdata();
@@ -165,7 +160,7 @@ fn rm_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
 
     let peer = match PeerId::from_str(pid) {
         Ok(p) => p,
-        Err(e) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
+        Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
     };
 
     let userdata = app.get_userdata();
@@ -178,7 +173,7 @@ fn rm_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
     CmdExeCode::Ok
 }
 
-fn list_all_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
+fn list_all_node(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
     let userdata = app.get_userdata();
     let mut kad = userdata.kad.clone();
     task::block_on(async {
@@ -216,7 +211,7 @@ fn find_peer(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
     };
     let peer = match PeerId::from_str(pid) {
         Ok(p) => p,
-        Err(e) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
+        Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
     };
     let userdata = app.get_userdata();
     let mut kad = userdata.kad.clone();
@@ -228,7 +223,7 @@ fn find_peer(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
     CmdExeCode::Ok
 }
 
-fn get_network_info(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
+fn get_network_info(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
     let userdata = app.get_userdata();
     let mut swarm = userdata.swarm.clone();
     task::block_on(async {
