@@ -686,13 +686,15 @@ impl IterativeQuery {
                 // Note: NumWaiting will be updated before invoking job.execute()
                 let num_jobs = alpha_value.checked_sub(closest_peers.num_of_state(PeerState::Waiting)).unwrap();
 
-                log::info!("iteratively querying, starting {} jobs", num_jobs);
+                log::info!("iteratively querying, starting {} query jobs at many", num_jobs);
 
                 let peer_iter = closest_peers.peers_in_state_mut(PeerState::NotContacted, num_jobs);
                 for peer in peer_iter {
                     //closest_peers.set_peer_state(&peer, PeerState::Waiting);
                     peer.state = PeerState::Waiting;
                     let peer_id = peer.peer.node_id.clone();
+
+                    log::debug!("creating query job for {:?}", peer_id);
 
                     let job = QueryJob {
                         key: me.key.clone(),

@@ -482,6 +482,9 @@ async fn open_stream_internal(
     ctrl: mpsc::Sender<SwarmControlCmd>,
     metric: Arc<Metric>,
 ) -> Result<Substream, TransportError> {
+
+    log::debug!("about to open substream on {:?} {:?}", cid, pids.iter().map(|p| p.protocol_name_str()).collect::<Vec<_>>());
+
     let raw_stream = stream_muxer.open_stream().await?;
     let la = stream_muxer.local_multiaddr();
     let ra = stream_muxer.remote_multiaddr();

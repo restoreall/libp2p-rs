@@ -1135,9 +1135,6 @@ impl Swarm {
     ///
     /// start a Task for accepting new sub-stream from the connection
     fn handle_connection_closed(&mut self, cid: ConnectionId) -> Result<()> {
-        log::info!("before close {:?}", self.connections_by_id);
-        log::info!("before close {:?}", self.connections_by_peer);
-
         log::trace!("handle_connection_closed: {:?}", cid);
 
         // try to retrieve the Connection by looking up 'connections_by_id'
@@ -1164,13 +1161,7 @@ impl Swarm {
             log::info!("shouldn't happen, wired connection {:?}", cid);
         }
 
-        log::info!("after close {:?}", self.connections_by_id);
-        log::info!("after close {:?}", self.connections_by_peer);
-
-        log::info!("close {:?}", self.peer_store);
-
-        Ok(())
-    }
+        Ok(())    }
 
     /// Received ping result, and then updates addrbook in peerstore
     fn handle_ping_result(&mut self, cid: ConnectionId, result: Result<Duration>) -> Result<()> {
