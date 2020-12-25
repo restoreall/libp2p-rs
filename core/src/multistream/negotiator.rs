@@ -29,6 +29,7 @@ use super::{
     protocol::{Message, MessageIO, Protocol, ProtocolError, Version},
     ReadEx, WriteEx,
 };
+use crate::upgrade::ProtocolName;
 
 pub struct Negotiator<TProto> {
     protocols: Vec<(TProto, Protocol)>,
@@ -131,6 +132,8 @@ impl<TProto: AsRef<[u8]> + Clone> Negotiator<TProto> {
             return Err(ProtocolError::InvalidMessage.into());
         }
 
+        let mut cause = vec![];
+
         for proto in &self.protocols {
             io.send_message(Message::Protocol(proto.1.clone())).await?;
             log::debug!("Dialer: Proposed protocol: {}", proto.1);
@@ -145,14 +148,15 @@ impl<TProto: AsRef<[u8]> + Clone> Negotiator<TProto> {
                 Message::NotAvailable => {
                     log::debug!(
                         "Dialer: Received rejection of protocol: {}",
-                        String::from_utf8_lossy(proto.0.as_ref())
+                        proto.0.protocol_name_str()
                     );
+                    cause.push(proto.0.protocol_name_str().to_string());
                     continue;
                 }
                 _ => return Err(ProtocolError::InvalidMessage.into()),
             }
         }
-        Err(NegotiationError::Failed)
+        Err(NegotiationError::Failed(cause))
     }
 }
 
@@ -168,7 +172,9 @@ pub enum NegotiationError {
     ProtocolError(ProtocolError),
 
     /// Protocol negotiation failed because no protocol could be agreed upon.
-    Failed,
+    ///
+    /// Vec<String> contains the rejected protocols.
+    Failed(Vec<String>),
 }
 
 impl From<ProtocolError> for NegotiationError {
@@ -205,7 +211,7 @@ impl fmt::Display for NegotiationError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
             NegotiationError::ProtocolError(p) => fmt.write_fmt(format_args!("Protocol error: {}", p)),
-            NegotiationError::Failed => fmt.write_str("Protocol negotiation failed."),
+            NegotiationError::Failed(cause) => fmt.write_fmt(format_args!("Protocol negotiation failed {:?}.", cause)),
         }
     }
 }

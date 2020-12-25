@@ -83,18 +83,26 @@ fn run_server() {
     let store = MemoryStore::new(swarm.local_peer_id().clone());
     let kad = Kademlia::new(swarm.local_peer_id().clone(), store);
 
-    let kad_control = kad.control();
+    let mut kad_control = kad.control();
 
     swarm = swarm.with_protocol(Box::new(kad.handler()));
     kad.start(swarm_control.clone());
 
     swarm.start();
 
+    async_std::task::block_on(async {
+        let peer: PeerId = "12D3KooWRxEwFS9iQMGjfiU6j5XcjuZM5wReAn6m81k4y6mwBvrN".parse().unwrap();
+        let addr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+        kad_control.add_node(peer, vec![addr]).await;
+        kad_control.bootstrap().await;
+    });
+
     // now preprare CLI and run it
     let mydata = MyCliData {
         kad: kad_control,
         swarm: swarm_control,
     };
+
 
     let mut app = App::new("xCLI", mydata)
         .version("v0.1")

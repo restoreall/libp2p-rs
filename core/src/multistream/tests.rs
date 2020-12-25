@@ -175,7 +175,7 @@ fn no_protocol_found() {
             let protos = vec![b"/proto3", b"/proto4"];
             let neg = Negotiator::new_with_protocols(protos);
             match neg.select_one(connec).await {
-                Err(NegotiationError::Failed) => return,
+                Err(NegotiationError::Failed(_)) => return,
                 Ok(_) => {}
                 Err(_) => panic!(),
             }
