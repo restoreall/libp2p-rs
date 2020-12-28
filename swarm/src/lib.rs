@@ -593,12 +593,12 @@ impl Swarm {
     ) -> Result<()> {
         if let Some(connection) = self.get_best_conn(&peer_id) {
             // well, we have a connection, start a task to open the stream
+            log::debug!("Create a new stream using the existing connection {:?}", connection.id());
             connection.open_stream(pids, move |r| {
                 let _ = reply.send(r.map_err(|e| e.into()));
             });
-            log::debug!("Create a new stream using the existing connection");
         } else {
-            log::debug!("Dial and then create a new stream");
+            log::debug!("Dial and create a new stream for {:?}", peer_id);
             // dialing peer, and opening a new stream in the post-processing callback
             self.dial_peer(peer_id.clone(), use_dht, |r: Result<&mut Connection>| match r {
                 Ok(connection) => {
@@ -836,9 +836,9 @@ impl Swarm {
 
         log::trace!("trying to get the best connnection for {:?}", peer_id);
 
-        self.connections_by_peer
-            .iter()
-            .for_each(|(k, v)| log::info!("get best conn,{:?}={:?}", k, v));
+        // self.connections_by_peer
+        //     .iter()
+        //     .for_each(|(k, v)| log::trace!("get best conn,{:?}={:?}", k, v));
 
         //let v = self.connections_by_peer.get_mut(peer_id).unwrap();
 
@@ -1143,6 +1143,10 @@ impl Swarm {
             let remote_peer_id = connection.remote_peer();
             if let Some(ids) = self.connections_by_peer.get_mut(&remote_peer_id) {
                 ids.retain(|id| id != &cid);
+                // remove the peer if all the connections of the peer are closed
+                if ids.is_empty() {
+                    self.connections_by_peer.remove(&remote_peer_id);
+                }
             } else {
                 log::warn!("shouldn't happen, PeerId={:?}", remote_peer_id);
             }
@@ -1185,9 +1189,7 @@ impl Swarm {
 
     fn handle_observed_address(&mut self, observed_addr: Multiaddr, cid: ConnectionId) {
         log::trace!("identify observed_addr: {} cid={:?}", observed_addr, cid);
-
         let addrs = self.address_translation(&observed_addr).collect::<Vec<_>>();
-
         for addr in addrs {
             self.external_addrs.add(addr);
         }
@@ -1212,7 +1214,7 @@ impl Swarm {
                     // Insert remote peer_id and public key into peerstore->KeyBook if non-exist
                     self.peer_store.add_key(&peer_id, remote_pubkey);
 
-                    log::debug!("identified addresses {:?} protocols {:?} for {}", info.listen_addrs, info.protocols, peer_id);
+                    log::debug!("identified peer addresses {:?} protocols {:?} for {}", info.listen_addrs, info.protocols, peer_id);
                     // update peerstore with the listening addresses and protocols of the remote peer
                     // self.peer_store.add_addr(&peer_id, connection.remote_addr(), ADDRESS_TTL, false);
                     self.peer_store.add_addrs(&peer_id, info.listen_addrs, ADDRESS_TTL, false);

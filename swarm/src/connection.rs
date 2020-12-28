@@ -360,7 +360,7 @@ impl Connection {
     /// Stops the Ping service on this connection
     pub(crate) async fn stop_ping(&mut self) {
         if let Some(h) = self.ping_handle.take() {
-            log::debug!("stopping Ping service...");
+            log::trace!("stopping Ping service for {:?}...", self.id);
             self.ping_running.store(false, Ordering::Relaxed);
             h.await;
             //h.cancel().await;
@@ -405,7 +405,7 @@ impl Connection {
 
     pub(crate) async fn stop_identify(&mut self) {
         if let Some(h) = self.identify_handle.take() {
-            log::debug!("stopping Identify service...");
+            log::trace!("stopping Identify service for {:?}...", self.id);
             h.cancel().await;
         }
     }
@@ -448,7 +448,7 @@ impl Connection {
     }
     pub(crate) async fn stop_identify_push(&mut self) {
         if let Some(h) = self.identify_push_handle.take() {
-            log::debug!("stopping Identify Push service...");
+            log::trace!("stopping Identify Push service for {:?}...", self.id);
             h.cancel().await;
         }
     }

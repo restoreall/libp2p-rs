@@ -1407,7 +1407,7 @@ where
                 });
             }
             RefreshStage::SelfQueryDone => {
-                log::debug!("bootstrap: self-query done, proceeding with random walk");
+                log::debug!("bootstrap: self-query done, proceeding with random walk...");
 
                 // always mark bootstrapped as true if we step into this stage
                 self.bootstrapped = true;

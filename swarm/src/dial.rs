@@ -105,13 +105,13 @@ impl DialLimiter {
 
     /// Tries to take the needed tokens for starting the given dial job.
     async fn do_dial_job(&self, mut dj: DialJob) {
-        log::debug!("[DialLimiter] executing a dial job through limiter: {}", dj.addr);
+        log::debug!("[DialLimiter] executing job through limiter, {} {}", dj.peer, dj.addr);
 
         if self.dial_consuming.load(Ordering::SeqCst) >= self.dial_limit {
             log::info!(
-                "[DialLimiter] Terminate dial waiting on dial token; peer: {}; addr: {}; consuming: {:?}; limit: {:?};",
-                &dj.peer,
-                &dj.addr,
+                "[DialLimiter] Terminate while waiting on dial token; peer: {}; addr: {}; consuming: {:?}; limit: {:?};",
+                dj.peer,
+                dj.addr,
                 self.dial_consuming,
                 self.dial_limit,
             );
@@ -120,9 +120,9 @@ impl DialLimiter {
         }
 
         log::trace!(
-            "[DialLimiter] taking dial token: peer: {}; addr: {}; prev consuming: {:?}",
-            &dj.peer,
-            &dj.addr,
+            "[DialLimiter] taking token: peer: {}; addr: {}; prev consuming: {:?}",
+            dj.peer,
+            dj.addr,
             self.dial_consuming
         );
         self.dial_consuming.fetch_add(1, Ordering::SeqCst);
@@ -452,7 +452,7 @@ impl AsyncDialer {
             // first of all, check the transport
             let r = param.transports.lookup_by_addr(addr.clone());
             if r.is_err() {
-                log::info!("[Dialer] no transport found for {:?}", addr);
+                log::debug!("[Dialer] no transport found for {:?} {:?}", peer_id, addr);
                 continue;
             }
 
@@ -484,7 +484,7 @@ impl AsyncDialer {
     ) -> Result<IStreamMuxer> {
         for i in 0..jobs {
             let peer_id = param.peer_id.clone();
-            log::trace!("[Dialer] receiving dial result, finished jobs={} ...", i);
+            log::trace!("[Dialer] job {:?} finished jobs={} ...", peer_id, i);
             let r = rx.next().await;
             match r {
                 Some((Ok(stream_muxer), addr)) => {
@@ -493,12 +493,12 @@ impl AsyncDialer {
                     // verify if the PeerId matches expectation, otherwise,
                     // it is a bad outgoing connection
                     if peer_id == reported_pid {
-                        log::info!("[Dialer] dialing job succeeded ,addr={:?}", addr);
+                        log::info!("[Dialer] job {:?} succeeded, {:?}", peer_id, stream_muxer);
                         // return here, ignore the rest of jobs
                         return Ok(stream_muxer);
                     } else {
                         log::info!(
-                            "[Dialer] bad connection, peerid mismatch conn={:?} wanted={:?} got={:?}",
+                            "[Dialer] job failed due to peer id mismatch conn={:?} wanted={:?} got={:?}",
                             stream_muxer,
                             peer_id,
                             reported_pid
@@ -507,7 +507,7 @@ impl AsyncDialer {
                     }
                 }
                 Some((Err(err), addr)) => {
-                    log::info!("[Dialer] dialing job failed: addr={:?},error={:?}", addr.clone(), err);
+                    log::info!("[Dialer] job {:?} failed: addr={:?},error={:?}", peer_id, addr.clone(), err);
                     if let SwarmError::Transport(_) = err {
                         // add to backoff list if transport error reported
                         param.backoff.add_peer(peer_id, addr).await;

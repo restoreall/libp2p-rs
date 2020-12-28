@@ -485,7 +485,8 @@ impl IterativeQuery {
                 duration,
             } => {
                 // incorporate 'closer' into 'clostest_peers', marked as PeerState::NotContacted
-                log::info!("successful query from {:}, closer {:?}, {:?}", source, closer, duration);
+                log::debug!("successful query from {:}, found {} closer peers. {:?}", source, closer.len(), duration);
+                log::trace!("{:?} returns closer peers: {:?}", source, closer);
                 // note we don't add myself
                 closer.retain(|p| p.node_id != me.local_id.clone());
 
@@ -671,19 +672,20 @@ impl IterativeQuery {
                 let update = rx.next().await.expect("must");
                 let is_completed = me.handle_update(update, &mut query_results, &mut closest_peers).await;
                 if is_completed {
+                    log::info!("iterative query completed");
                     break;
                 }
 
                 // starvation, if no peer to contact and no pending query
                 if closest_peers.is_starved() {
                     //return true, LookupStarvation, nil
-                    log::trace!("query starvation, if no peer to contact and no pending query");
+                    log::info!("query starvation, if no peer to contact and no pending query");
                     break;
                 }
                 // meet the k_value? meaning lookup completed
                 if closest_peers.can_terminate(beta_value) {
                     //return true, LookupCompleted, nil
-                    log::trace!("query got enough results, completed");
+                    log::info!("query got enough results {}, completed", beta_value);
                     break;
                 }
 

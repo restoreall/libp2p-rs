@@ -22,7 +22,7 @@ use crate::multistream::Negotiator;
 use crate::transport::TransportError;
 use crate::upgrade::{ProtocolName, Upgrader};
 use libp2prs_traits::{ReadEx, WriteEx};
-use log::{info, trace};
+use log::{trace, debug};
 
 //b"/multistream/1.0.0"
 
@@ -55,7 +55,7 @@ impl<U> Multistream<U> {
 
         let (proto, socket) = neg.negotiate(socket).await?;
 
-        info!("select_inbound {:?}", proto);
+        debug!("select_inbound {:?}", proto);
         self.inner.upgrade_inbound(socket, proto.0).await
     }
 
@@ -70,7 +70,7 @@ impl<U> Multistream<U> {
 
         let (proto, socket) = neg.select_one(socket).await?;
 
-        info!("select_outbound {:?}", proto);
+        debug!("select_outbound {:?}", proto);
         self.inner.upgrade_outbound(socket, proto.0).await
     }
 }
