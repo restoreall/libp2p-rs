@@ -51,17 +51,16 @@
 //! behaviour of the protocol.
 //!
 
+use std::fmt;
+
 use async_trait::async_trait;
 
 use crate::transport::TransportError;
 
+pub use self::{dummy::DummyUpgrader, select::Selector};
 pub(crate) mod dummy;
 pub(crate) mod multistream;
 pub(crate) mod select;
-
-pub use self::{dummy::DummyUpgrader, select::Selector};
-use bytes::Bytes;
-use std::fmt;
 
 /// Types serving as protocol names.
 ///
@@ -110,9 +109,13 @@ impl<T: AsRef<[u8]>> ProtocolName for T {
     }
 }
 
-
+/// A general new type implementation of ProtocolName trait.
+///
+/// It is used to simplify the usage of ProtocolName. Furthermore, it
+/// provides more friendly Debug and Display, which can output a
+/// readable string instead of an array [...]
 #[derive(Clone, PartialOrd, PartialEq, Eq, Hash)]
-pub struct ProtocolId(Bytes);
+pub struct ProtocolId(&'static [u8]);
 
 
 impl fmt::Debug for ProtocolId {
@@ -139,16 +142,15 @@ impl AsRef<[u8]> for ProtocolId {
     }
 }
 
+// impl From<Bytes> for ProtocolId {
+//     fn from(value: Bytes) -> Self {
+//         ProtocolId(value)
+//     }
+// }
 
-impl From<Bytes> for ProtocolId {
-    fn from(value: Bytes) -> Self {
+impl From<&'static [u8]> for ProtocolId {
+    fn from(value: &'static [u8]) -> Self {
         ProtocolId(value)
-    }
-}
-
-impl From<&[u8]> for ProtocolId {
-    fn from(value: &[u8]) -> Self {
-        Self::from(Bytes::copy_from_slice(value))
     }
 }
 
@@ -216,5 +218,12 @@ mod tests {
         assert_eq!(p.protocol_info().get(0).unwrap(), &MyProtocolName::Version1);
         assert_eq!(p.protocol_info().get(1).unwrap(), &MyProtocolName::Version2);
         assert_eq!(p.protocol_info().get(2).unwrap(), &MyProtocolName::Version3);
+    }
+
+    #[test]
+    fn protocol_id() {
+        let p = ProtocolId::from(b"protocol" as &[u8]);
+
+        assert_eq!(p.to_string(), "protocol");
     }
 }
