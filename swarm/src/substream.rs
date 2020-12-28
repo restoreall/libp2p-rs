@@ -154,6 +154,15 @@ impl Substream {
             metric,
         }
     }
+    /// Builds a SubstreamView struct.
+    pub fn to_view(&self) -> SubstreamView {
+        SubstreamView {
+            cid: self.cid(),
+            id: self.id(),
+            protocol: self.protocol().clone(),
+            dir: self.dir()
+        }
+    }
     /// Returns the protocol of the sub stream.
     pub fn protocol(&self) -> &ProtocolId {
         &self.info.protocol
@@ -226,3 +235,15 @@ impl WriteEx for Substream {
     }
 }
 
+/// SubstreamView represents the basic information of a substream.
+#[derive(Debug, Clone)]
+pub struct SubstreamView {
+    /// The connection id of the substream.
+    pub cid: ConnectionId,
+    /// The id of the substream.
+    pub id: StreamId,
+    /// The protocol of the sub stream.
+    pub protocol: ProtocolId,
+    /// The direction of the sub stream.
+    pub dir: Direction,
+}

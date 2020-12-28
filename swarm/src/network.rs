@@ -18,23 +18,19 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::connection::ConnectionInfo;
+use libp2prs_core::PeerId;
 
 /// Information about the network obtained by [`Network::info()`].
 #[derive(Debug)]
 pub struct NetworkInfo {
+    /// The local Peer Id of self node.
+    pub id: PeerId,
     /// The total number of connected peers.
     pub num_peers: usize,
-    /// The total number of connections, both established and pending.
+    /// The total number of connections.
     pub num_connections: usize,
-    /// The total number of pending connections, both incoming and outgoing.
-    pub num_connections_pending: usize,
-    /// The total number of established connections.
-    pub num_connections_established: usize,
     /// The total number of active sub streams.
     pub num_active_streams: usize,
-    /// The information of all established connections.
-    pub connection_info: Vec<ConnectionInfo>,
 }
 
 /// The (optional) configuration for a [`Network`].

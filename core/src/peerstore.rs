@@ -64,6 +64,7 @@ impl PeerStore {
     pub fn new() -> PeerStore {
         let p = PeerStore::default();
 
+        // just for now, disable the gc
         // let peer_store = p.clone();
         // task::spawn(async move {
         //     peer_store.addr_gc().await;
@@ -173,9 +174,9 @@ impl PeerStore {
     }
 
     /// Retrieve the record from the address book.
-    pub fn get_addr(&self, peer_id: &PeerId) -> Option<SmallVec<[AddrBookRecord; 4]>> {
+    pub fn get_addrs(&self, peer_id: &PeerId) -> Option<SmallVec<[AddrBookRecord; 4]>> {
         let guard = self.inner.lock().unwrap();
-        guard.addrs.get_addr(peer_id).cloned()
+        guard.addrs.get_addrs(peer_id).cloned()
     }
 
     /// Update ttl if current_ttl equals old_ttl.
@@ -370,7 +371,7 @@ impl AddrBook {
         self.addr_book.remove(peer_id);
     }
 
-    fn get_addr(&self, peer_id: &PeerId) -> Option<&SmallVec<[AddrBookRecord; 4]>> {
+    fn get_addrs(&self, peer_id: &PeerId) -> Option<&SmallVec<[AddrBookRecord; 4]>> {
         self.addr_book.get(peer_id)
     }
 
@@ -380,15 +381,12 @@ impl AddrBook {
 
     // Update ttl if current_ttl equals old_ttl.
     fn update_addr(&mut self, peer_id: &PeerId, new_ttl: Duration) {
-        if self.get_addr(peer_id).is_some() {
-            let record_vec = self.addr_book.get_mut(peer_id).unwrap();
+        if let Some(record_vec) = self.addr_book.get_mut(peer_id) {
             let time = Instant::now().checked_add(new_ttl);
-
-            for record in record_vec.into_iter() {
+            for record in record_vec.iter_mut() {
                 if record.addr_type == KAD {
                     continue;
                 }
-
                 record.set_expiry(time);
             }
         }
@@ -555,20 +553,20 @@ mod tests {
         ab.add_addr(&peer_id, "/memory/123456".parse().unwrap(), Duration::from_secs(1), false);
 
         assert_eq!(
-            &(ab.get_addr(&peer_id).unwrap().first().unwrap().addr),
+            &(ab.get_addrs(&peer_id).unwrap().first().unwrap().addr),
             &"/memory/123456".parse().unwrap()
         );
 
         ab.add_addr(&peer_id, "/memory/654321".parse().unwrap(), Duration::from_secs(1), false);
-        let addrs = ab.get_addr(&peer_id).unwrap();
+        let addrs = ab.get_addrs(&peer_id).unwrap();
         assert_eq!(addrs.len(), 2);
 
         ab.add_addr(&peer_id, "/memory/654321".parse().unwrap(), Duration::from_secs(1), false);
-        let addrs = ab.get_addr(&peer_id).unwrap();
+        let addrs = ab.get_addrs(&peer_id).unwrap();
         assert_eq!(addrs.len(), 2);
 
         ab.clear_addrs(&peer_id);
-        assert!(ab.get_addr(&peer_id).is_none());
+        assert!(ab.get_addrs(&peer_id).is_none());
     }
 
     #[test]

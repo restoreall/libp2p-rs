@@ -48,7 +48,7 @@ use crate::control::SwarmControlCmd;
 use crate::identify::{IDENTIFY_PROTOCOL, IDENTIFY_PUSH_PROTOCOL};
 use crate::metrics::metric::Metric;
 use crate::ping::PING_PROTOCOL;
-use crate::substream::{ConnectInfo, StreamId, Substream};
+use crate::substream::{ConnectInfo, StreamId, Substream, SubstreamView};
 use crate::{identify, ping, Multiaddr, PeerId, ProtocolId, SwarmError, SwarmEvent};
 
 /// The direction of a peer-to-peer communication channel.
@@ -74,9 +74,8 @@ pub struct Connection {
     tx: mpsc::UnboundedSender<SwarmEvent>,
     /// The ctrl tx channel.
     ctrl: mpsc::Sender<SwarmControlCmd>,
-    /// Handler that processes substreams.
-    //substreams: SmallVec<[Substream; 8]>,
-    substreams: SmallVec<[StreamId; 8]>,
+    /// All sub-streams belonged to this connection.
+    substreams: SmallVec<[SubstreamView; 8]>,
     /// Direction of this connection
     dir: Direction,
     /// Indicates if Ping task is running.
@@ -96,27 +95,6 @@ pub struct Connection {
     identify_push_handle: Option<JoinHandle<()>>,
     /// Global metrics.
     metric: Arc<Metric>,
-}
-
-impl Clone for Connection {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            stream_muxer: self.stream_muxer.clone(),
-            tx: self.tx.clone(),
-            ctrl: self.ctrl.clone(),
-            substreams: self.substreams.clone(),
-            dir: self.dir,
-            ping_running: self.ping_running.clone(),
-            ping_failures: self.ping_failures,
-            identity: None,
-            handle: None,
-            ping_handle: None,
-            identify_handle: None,
-            identify_push_handle: None,
-            metric: self.metric.clone(),
-        }
-    }
 }
 
 impl PartialEq for Connection {
@@ -168,6 +146,19 @@ impl Connection {
         }
     }
 
+    pub(crate) fn to_view(&self) -> ConnectionView {
+        ConnectionView {
+            id: self.id,
+            dir: self.dir,
+            info: self.info(),
+            substreams: self.substreams.clone()
+        }
+    }
+
+    pub(crate) fn substream_view(&self) -> Vec<SubstreamView> {
+        self.substreams.to_vec()
+    }
+
     /// Returns the unique Id of the connection.
     pub(crate) fn id(&self) -> ConnectionId {
         self.id
@@ -202,8 +193,8 @@ impl Connection {
             // So, at this moment, make a new 'TransportError::Internal'
             let event = match result.as_ref() {
                 Ok(sub_stream) => {
-                    let sid = sub_stream.id();
-                    SwarmEvent::StreamOpened { cid, sid }
+                    let view = sub_stream.to_view();
+                    SwarmEvent::StreamOpened { view }
                 }
                 Err(_) => {
                     SwarmEvent::StreamError { cid, error: TransportError::Internal }
@@ -267,14 +258,14 @@ impl Connection {
     }
 
     /// Adds a substream id to the list.
-    pub(crate) fn add_stream(&mut self, sid: StreamId) {
-        log::trace!("adding sub {:?} to {:?}", sid, self);
-        self.substreams.push(sid);
+    pub(crate) fn add_stream(&mut self, view: SubstreamView) {
+        log::trace!("adding sub {:?} to {:?}", view, self);
+        self.substreams.push(view);
     }
     /// Removes a substream id from the list.
     pub(crate) fn del_stream(&mut self, sid: StreamId) {
         log::trace!("removing sub {:?} from {:?}", sid, self);
-        self.substreams.retain(|s| s != &sid);
+        self.substreams.retain(|s| s.id != sid);
     }
 
     /// Returns how many substreams in the list.
@@ -321,9 +312,8 @@ impl Connection {
                 let r = open_stream_internal(cid, stream_muxer, pids, ctrl2, metric.clone()).await;
                 let r = match r {
                     Ok(stream) => {
-                        let cid = stream.cid();
-                        let sid = stream.id();
-                        let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
+                        let view = stream.to_view();
+                        let _ = tx.send(SwarmEvent::StreamOpened { view }).await;
                         let res = ping::ping(stream, timeout).await;
                         if res.is_ok() {
                             fail_cnt = 0;
@@ -380,8 +370,8 @@ impl Connection {
             let r = open_stream_internal(cid, stream_muxer, pids, ctrl, metric).await;
             let r = match r {
                 Ok(stream) => {
-                    let sid = stream.id();
-                    let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
+                    let view = stream.to_view();
+                    let _ = tx.send(SwarmEvent::StreamOpened { view }).await;
                     identify::process_message(stream).await
                 }
                 Err(err) => {
@@ -429,8 +419,8 @@ impl Connection {
             let r = open_stream_internal(cid, stream_muxer, pids, ctrl, metric).await;
             match r {
                 Ok(stream) => {
-                    let sid = stream.id();
-                    let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
+                    let view = stream.to_view();
+                    let _ = tx.send(SwarmEvent::StreamOpened { view }).await;
                     // ignore the error
                     let _ = identify::produce_message(stream, info).await;
                 }
@@ -454,10 +444,8 @@ impl Connection {
     }
 
     pub(crate) fn info(&self) -> ConnectionInfo {
-        // calculate inbound
-        // TODO:
-        let num_inbound_streams = self.substreams.iter().fold(0usize, |mut acc, _s| {
-            if true /*s.dir() == Direction::Inbound*/ {
+        let num_inbound_streams = self.substreams.iter().fold(0usize, |mut acc, s| {
+            if s.dir == Direction::Inbound {
                 acc += 1;
             }
             acc
@@ -472,6 +460,19 @@ impl Connection {
             num_outbound_streams,
         }
     }
+}
+
+#[derive(Debug)]
+/// ConnectionView is used for debugging purpose.
+pub struct ConnectionView {
+    /// The unique ID for a connection.
+    pub id: ConnectionId,
+    /// Direction of this connection.
+    pub dir: Direction,
+    /// Detailed information of this connection.
+    pub info: ConnectionInfo,
+    /// Handler that processes substreams.
+    pub substreams: SmallVec<[SubstreamView; 8]>,
 }
 
 async fn open_stream_internal(

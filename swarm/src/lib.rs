@@ -80,8 +80,8 @@ use libp2prs_core::{
     PeerId, ProtocolId, PublicKey,
 };
 
-use crate::connection::{Connection, ConnectionId, ConnectionLimit, Direction};
-use crate::control::SwarmControlCmd;
+use crate::connection::{Connection, ConnectionId, ConnectionLimit, Direction, ConnectionView};
+use crate::control::{SwarmControlCmd, DumpCommand};
 use crate::dial::EitherDialAddr;
 use crate::identify::{IdentifyConfig, IdentifyHandler, IdentifyInfo, IdentifyPushHandler};
 use crate::metrics::metric::Metric;
@@ -90,7 +90,7 @@ use crate::network::NetworkInfo;
 use crate::ping::{PingConfig, PingHandler};
 use crate::protocol_handler::IProtocolHandler;
 use crate::registry::Addresses;
-use crate::substream::{ConnectInfo, StreamId, Substream};
+use crate::substream::{ConnectInfo, StreamId, Substream, SubstreamView};
 use libp2prs_core::translation::address_translation;
 
 type Result<T> = std::result::Result<T, SwarmError>;
@@ -123,10 +123,8 @@ pub enum SwarmEvent {
     },
     /// A new substream opened.
     StreamOpened {
-        /// The connection Id of the sub stream.
-        cid: ConnectionId,
-        /// The stream Id of the sub stream.
-        sid: StreamId,
+        /// The view of the opened substream.
+        view: SubstreamView,
     },
     /// An error happened on a connection during its initial handshake.
     ///
@@ -223,8 +221,7 @@ struct Transports {
 
 impl Transports {
     pub(crate) fn lookup_by_addr(&self, mut addr: Multiaddr) -> Result<ITransportEx> {
-        log::trace!("get transport for addr={}", addr);
-
+        log::trace!("lookup transport for addr={}", addr);
         if let Some(d) = addr.pop() {
             if let Ok(id) = d.get_key() {
                 if let Some(transport) = self.inner.get(&id).map(|s| s.box_clone()) {
@@ -470,8 +467,8 @@ impl Swarm {
             SwarmEvent::StreamError { .. } => {
                 // TODO: add statistics
             }
-            SwarmEvent::StreamOpened { cid, sid } => {
-                let _ = self.handle_stream_opened(cid, sid);
+            SwarmEvent::StreamOpened { view } => {
+                let _ = self.handle_stream_opened(view);
             }
             SwarmEvent::PingResult { cid, result } => {
                 let _ = self.handle_ping_result(cid, result);
@@ -538,6 +535,20 @@ impl Swarm {
                     log::info!("PeerStore save data failed: {}", e);
                 }
                 let _ = self.event_sender.close_channel();
+            }
+            SwarmControlCmd::Dump(cmd) => {
+                match cmd {
+                    DumpCommand::Connections(reply) => {
+                        let _ = self.on_retrieve_connection_views(|r| {
+                            let _ = reply.send(r);
+                        });
+                    }
+                    DumpCommand::Streams(cid, reply) => {
+                        let _ = self.on_retrieve_substream_views(cid, |r| {
+                            let _ = reply.send(r);
+                        });
+                    }
+                }
             }
         }
 
@@ -624,14 +635,24 @@ impl Swarm {
         Ok(())
     }
 
-    ///
+    /// Retrieves the network information.
     fn on_retrieve_network_info(&mut self, f: impl FnOnce(Result<NetworkInfo>)) -> Result<()> {
         f(Ok(self.get_network_info()));
         Ok(())
     }
-    ///
+    /// Retrieves the indentify information.
     fn on_retrieve_identify_info(&mut self, f: impl FnOnce(Result<IdentifyInfo>)) -> Result<()> {
         f(Ok(self.get_identify_info()));
+        Ok(())
+    }
+    /// Retrieves the connection views.
+    fn on_retrieve_connection_views(&mut self, f: impl FnOnce(Result<Vec<ConnectionView>>)) -> Result<()> {
+        f(Ok(self.get_connection_views()));
+        Ok(())
+    }
+    /// Retrieves the substream views.
+    fn on_retrieve_substream_views(&mut self, cid: ConnectionId, f: impl FnOnce(Result<Vec<SubstreamView>>)) -> Result<()> {
+        f(self.get_substream_views(cid));
         Ok(())
     }
     /// Starts Swarm background task
@@ -641,30 +662,27 @@ impl Swarm {
         let mut swarm = self;
         task::spawn(async move { while let Ok(()) = swarm.next().await {} });
     }
-    //
-    // /// Returns the transport passed when building this object.
-    // pub fn transport(&self) -> &TTrans {
-    //     &self.transport
-    // }
-    //
+
+    fn get_connection_views(&self) -> Vec<ConnectionView> {
+        self.connections_by_id.iter().map(|(_,c)|c.to_view()).collect()
+    }
+    fn get_substream_views(&self, cid: ConnectionId) -> Result<Vec<SubstreamView>> {
+        self.connections_by_id.get(&cid)
+            .map(|c| { c.substream_view() })
+            .ok_or(SwarmError::Internal)
+    }
     /// Returns network information about the `Swarm`.
     fn get_network_info(&self) -> NetworkInfo {
-        // TODO: add stats later on
-        let num_connections_established = self.connections_by_id.len();
-        let num_connections_pending = 0; //self.pool.num_pending();
-        let num_connections = num_connections_established + num_connections_pending;
+        let id = self.local_peer_id.clone();
+        let num_connections = self.connections_by_id.len();
         let num_peers = self.connections_by_peer.len();
         let num_active_streams = self.connections_by_id.iter().fold(0, |acc, (_k, v)| acc + v.num_streams());
-        let mut connection_info = vec![];
-        self.connections_by_id.iter().for_each(|(_id, c)| connection_info.push(c.info()));
 
         NetworkInfo {
+            id,
             num_peers,
             num_connections,
-            num_connections_established,
-            num_connections_pending,
             num_active_streams,
-            connection_info,
         }
     }
     /// Returns identify information about the `Swarm`.
@@ -804,7 +822,7 @@ impl Swarm {
             return;
         }
         // then check addrs, return error if none when DHT is not enabled
-        let r = self.peer_store.get_addr(&peer_id);
+        let r = self.peer_store.get_addrs(&peer_id);
         let addrs = match r {
             Some(l) if !l.is_empty() => {
                 dial::EitherDialAddr::Addresses(l.into_iter().map(|r| r.into_maddr()).collect())
@@ -1038,8 +1056,8 @@ impl Swarm {
                                 let rpid = stream_muxer.remote_peer();
                                 let ci = ConnectInfo { la, ra, rpid };
                                 let stream = Substream::new(raw_stream, metric, Direction::Inbound, proto.clone(), cid, ci, ctrl);
-                                let sid = stream.id();
-                                let _ = tx.send(SwarmEvent::StreamOpened { cid, sid }).await;
+                                let view = stream.to_view();
+                                let _ = tx.send(SwarmEvent::StreamOpened { view }).await;
 
                                 // anyway, start handler task
                                 task::spawn(async move {
@@ -1109,11 +1127,11 @@ impl Swarm {
     /// Handles opening stream
     ///
     /// Use channel to received message that sent by another task
-    fn handle_stream_opened(&mut self, cid: ConnectionId, sid: StreamId) -> Result<()> {
-        log::trace!("handle_stream_opened: {:?}/{:?}", cid, sid);
+    fn handle_stream_opened(&mut self, view: SubstreamView) -> Result<()> {
+        log::trace!("handle_stream_opened: {:?}", view);
         // add stream id to the connection substream list
-        if let Some(c) = self.connections_by_id.get_mut(&cid) {
-            c.add_stream(sid)
+        if let Some(c) = self.connections_by_id.get_mut(&view.cid) {
+            c.add_stream(view)
         };
         Ok(())
     }
@@ -1234,6 +1252,7 @@ impl Swarm {
         Ok(())
     }
 
+    // This is to be deleted later...
     pub fn peer_addrs_add(&mut self, peer_id: &PeerId, addr: Multiaddr, ttl: Duration) {
         self.peer_store.add_addr(peer_id, addr, ttl, false);
     }

@@ -28,11 +28,11 @@ use smallvec::SmallVec;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::connection::ConnectionId;
+use crate::connection::{ConnectionId, ConnectionView};
 use crate::identify::IdentifyInfo;
 use crate::metrics::metric::Metric;
 use crate::network::NetworkInfo;
-use crate::substream::{StreamId, Substream};
+use crate::substream::{StreamId, Substream, SubstreamView};
 use crate::SwarmError;
 
 type Result<T> = std::result::Result<T, SwarmError>;
@@ -42,7 +42,7 @@ type Result<T> = std::result::Result<T, SwarmError>;
 /// The `Swarm` controller manipulates the [`Swarm`] via these commands.
 ///
 #[derive(Debug)]
-#[allow(dead_code)]
+
 pub enum SwarmControlCmd {
     /// Open a connection to the remote peer with address specified.
     Connect(PeerId, Vec<Multiaddr>, oneshot::Sender<Result<()>>),
@@ -65,6 +65,17 @@ pub enum SwarmControlCmd {
     NetworkInfo(oneshot::Sender<Result<NetworkInfo>>),
     /// Retrieve network information of Swarm.
     IdentifyInfo(oneshot::Sender<Result<IdentifyInfo>>),
+    ///
+    Dump(DumpCommand),
+}
+
+/// The dump commands can be used to dump internal data of Swarm.
+#[derive(Debug)]
+pub enum DumpCommand {
+    /// Dump all active connections.
+    Connections(oneshot::Sender<Result<Vec<ConnectionView>>>),
+    /// Dump all substreams of a connection.
+    Streams(ConnectionId, oneshot::Sender<Result<Vec<SubstreamView>>>),
 }
 
 /// The `Swarm` controller.
@@ -128,11 +139,16 @@ impl Control {
         let _ = self.sender.send(SwarmControlCmd::NewConnection(peer_id, true, tx)).await;
         rx.await?
     }
-
     /// Make a new connection towards the remote peer, without using DHT.
     pub async fn new_connection_no_dht(&mut self, peer_id: PeerId) -> Result<()> {
         let (tx, rx) = oneshot::channel::<Result<()>>();
         let _ = self.sender.send(SwarmControlCmd::NewConnection(peer_id, false, tx)).await;
+        rx.await?
+    }
+    /// Close connection towards the remote peer.
+    pub async fn disconnect(&mut self, peer_id: PeerId) -> Result<()> {
+        let (tx, rx) = oneshot::channel::<Result<()>>();
+        let _ = self.sender.send(SwarmControlCmd::CloseConnection(peer_id, tx)).await;
         rx.await?
     }
 
@@ -172,6 +188,18 @@ impl Control {
         rx.await?
     }
 
+    pub async fn dump_connections(&mut self) -> Result<Vec<ConnectionView>> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(SwarmControlCmd::Dump(DumpCommand::Connections(tx))).await?;
+        rx.await?
+    }
+
+    pub async fn dump_streams(&mut self, cid: ConnectionId) -> Result<Vec<SubstreamView>> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(SwarmControlCmd::Dump(DumpCommand::Streams(cid, tx))).await?;
+        rx.await?
+    }
+
     /// Close the swarm.
     pub async fn close(&mut self) -> Result<()> {
         // SwarmControlCmd::CloseSwarm doesn't need a response from Swarm
@@ -200,13 +228,13 @@ impl Control {
     }
 
     /// Get multiaddr of a peer.
-    pub fn get_addr(&self, peer_id: &PeerId) -> Option<SmallVec<[AddrBookRecord; 4]>> {
-        self.peer_store.get_addr(peer_id)
+    pub fn get_addrs(&self, peer_id: &PeerId) -> Option<SmallVec<[AddrBookRecord; 4]>> {
+        self.peer_store.get_addrs(peer_id)
     }
 
-    /// Get multiaddr of a peer.
+    /// Get multiaddr of a peer, in a Vec<>.
     pub fn get_addrs_vec(&self, peer_id: &PeerId) -> Option<Vec<Multiaddr>> {
-        let r = self.peer_store.get_addr(peer_id);
+        let r = self.peer_store.get_addrs(peer_id);
         r.map(|r| r.into_iter().map(|r| r.into_maddr()).collect())
     }
 

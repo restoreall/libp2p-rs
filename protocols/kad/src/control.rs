@@ -31,11 +31,11 @@ type Result<T> = std::result::Result<T, KadError>;
 pub(crate) enum ControlCommand {
     /// Initiate bootstrapping to join the Kad DHT network.
     Bootstrap,
-    /// Adds a peer to Kad KBuckets, and its multiaddr to Peerstore.
+    /// Adds a peer node to Kad KBuckets, and its multiaddr to Peerstore.
     AddNode(PeerId, Vec<Multiaddr>, oneshot::Sender<()>),
     /// Removes a peer from Kad KBuckets, also removes it from Peerstore.
     RemoveNode(PeerId),
-    /// List all bootstrap node
+    /// List all peer nodes in KBuckets.
     ListAllNode(oneshot::Sender<Vec<KadPeer>>),
     /// Lookups the closer peers with given ID, returns a list of peer Id.
     Lookup(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
@@ -43,7 +43,6 @@ pub(crate) enum ControlCommand {
     /// with relevant addresses.
     FindPeer(PeerId, oneshot::Sender<Result<KadPeer>>),
     /// Lookup peers who are able to provide a given key.
-    ///
     FindProviders(record::Key, usize, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Provide adds the given key to the content routing system.
     /// It also announces it, otherwise it is just kept in the local

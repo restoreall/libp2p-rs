@@ -120,7 +120,7 @@ pub struct ProtocolId(&'static [u8]);
 
 impl fmt::Debug for ProtocolId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", String::from_utf8_lossy(&self.0))
+        write!(f, "ProtocolId({})", String::from_utf8_lossy(&self.0))
     }
 }
 

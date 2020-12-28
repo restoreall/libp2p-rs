@@ -179,7 +179,7 @@ impl DialBackoff {
 
     /// Returns whether the client should backoff dialing peer at address
     async fn find_peer(&self, peer_id: &PeerId, ma: &Multiaddr) -> bool {
-        log::trace!("[DialBackoff] find backoff,addr={:?}", ma);
+        log::trace!("[DialBackoff] lookup backoff,addr={:?}", ma);
         let lock = self.entries.lock().await;
         if let Some(peer_map) = lock.get(peer_id) {
             if let Some(backoff) = peer_map.get(&ma.to_string()) {

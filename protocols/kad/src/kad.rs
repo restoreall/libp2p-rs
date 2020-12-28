@@ -516,7 +516,7 @@ where
     ///        with the new peer.
     ///    2.2 if there is no such peer exists in that bucket, do nothing -> ignore adding peer
     fn try_add_peer(&mut self, peer: PeerId, queried: bool) {
-        log::trace!("trying add a peer to routing table: {}", peer);
+        log::trace!("trying to add a peer to routing table: {:?}", peer);
 
         let timeout = self.check_kad_peer_interval;
         let now = Instant::now();
@@ -563,6 +563,7 @@ where
     /// Returns `None` if the peer was not in the routing table,
     /// not even pending insertion.
     fn try_remove_peer(&mut self, peer: PeerId) -> Option<kbucket::EntryView<kbucket::Key<PeerId>, PeerInfo>> {
+        log::trace!("trying to remove a peer from routing table: {:?}", peer);
         let key = kbucket::Key::new(peer);
         match self.kbuckets.entry(&key) {
             kbucket::Entry::Present(entry) => Some(entry.remove()),
