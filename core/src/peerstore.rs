@@ -543,7 +543,6 @@ impl ProtoBook {
 mod tests {
     use crate::peerstore::{AddrBook, ProtoBook};
     use crate::PeerId;
-    use log::info;
     use std::time::Duration;
 
     #[test]

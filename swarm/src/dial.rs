@@ -490,8 +490,6 @@ impl AsyncDialer {
                 Some((Ok(stream_muxer), addr)) => {
                     let reported_pid = stream_muxer.remote_peer();
 
-                    println!("git peerid = {}", reported_pid);
-
                     // verify if the PeerId matches expectation, otherwise,
                     // it is a bad outgoing connection
                     if peer_id == reported_pid {
