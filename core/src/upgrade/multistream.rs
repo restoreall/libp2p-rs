@@ -55,7 +55,7 @@ impl<U> Multistream<U> {
 
         let (proto, socket) = neg.negotiate(socket).await?;
 
-        info!("select_inbound {:?}", proto.0);
+        info!("select_inbound {:?}", proto);
         self.inner.upgrade_inbound(socket, proto.0).await
     }
 
@@ -70,7 +70,7 @@ impl<U> Multistream<U> {
 
         let (proto, socket) = neg.select_one(socket).await?;
 
-        info!("select_outbound {:?}", proto.0);
+        info!("select_outbound {:?}", proto);
         self.inner.upgrade_outbound(socket, proto.0).await
     }
 }
