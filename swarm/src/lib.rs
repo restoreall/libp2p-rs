@@ -221,7 +221,7 @@ struct Transports {
 
 impl Transports {
     pub(crate) fn lookup_by_addr(&self, mut addr: Multiaddr) -> Result<ITransportEx> {
-        log::trace!("lookup transport for addr={}", addr);
+        log::debug!("lookup transport for addr={}", addr);
         if let Some(d) = addr.pop() {
             if let Ok(id) = d.get_key() {
                 if let Some(transport) = self.inner.get(&id).map(|s| s.box_clone()) {
@@ -371,11 +371,11 @@ impl Swarm {
             }
         }
         if !registered.is_empty() {
-            log::warn!("transports already registered for protocol(s): {:?}", registered);
+            log::info!("transports already registered for protocol(s): {:?}", registered);
         }
 
         for p in protocols.iter() {
-            log::trace!("add protocol={}", p);
+            log::debug!("add protocol={}", p);
             self.transports.add(*p, transport.box_clone());
         }
         self
@@ -464,6 +464,9 @@ impl Swarm {
             SwarmEvent::OutgoingConnectionError { tid, peer_id, error } => {
                 let _ = self.handle_connection_error(peer_id, error, tid);
             }
+            SwarmEvent::IncomingConnectionError { remote_addr, error } => {
+                log::debug!("incoming connection error for {:?} {:?}", remote_addr, error);
+            }
             SwarmEvent::StreamError { .. } => {
                 // TODO: add statistics
             }
@@ -529,7 +532,7 @@ impl Swarm {
                 });
             }
             SwarmControlCmd::CloseSwarm => {
-                log::info!("closing the swarm...");
+                log::debug!("closing the swarm...");
 
                 if let Err(e) = self.peer_store.save_data() {
                     log::info!("PeerStore save data failed: {}", e);
@@ -604,12 +607,12 @@ impl Swarm {
     ) -> Result<()> {
         if let Some(connection) = self.get_best_conn(&peer_id) {
             // well, we have a connection, start a task to open the stream
-            log::debug!("Create a new stream using the existing connection {:?}", connection.id());
+            log::debug!("open a stream using the existing connection {:?} for {:?}", connection.id(), peer_id);
             connection.open_stream(pids, move |r| {
                 let _ = reply.send(r.map_err(|e| e.into()));
             });
         } else {
-            log::debug!("Dial and create a new stream for {:?}", peer_id);
+            log::debug!("dial and open a stream for {:?}", peer_id);
             // dialing peer, and opening a new stream in the post-processing callback
             self.dial_peer(peer_id.clone(), use_dht, |r: Result<&mut Connection>| match r {
                 Ok(connection) => {
@@ -711,6 +714,7 @@ impl Swarm {
     ///
     /// Returns an error if the address is not supported.
     pub fn listen_on(&mut self, addrs: Vec<Multiaddr>) -> Result<()> {
+        log::debug!("listening on {:?}", addrs);
         let mut succeeded: u32 = 0;
         let mut errs = FnvHashMap::<u32, SwarmError>::default();
         for (i, n) in addrs.clone().into_iter().enumerate() {
@@ -752,12 +756,13 @@ impl Swarm {
 
         listen_addrs.dedup();
 
-        log::debug!("swarm self addresses: {:?}", listen_addrs);
+        log::trace!("swarm self addresses: {:?}", listen_addrs);
 
         listen_addrs
     }
 
     fn add_listen_addr(&mut self, addr: Multiaddr) -> Result<()> {
+        log::debug!("starting a listener on {:?}", addr);
         let mut transport = self.transports.lookup_by_addr(addr.clone())?;
         let mut listener = transport.listen_on(addr)?;
         self.listened_addrs.extend(listener.multi_addr());
@@ -784,7 +789,6 @@ impl Swarm {
                     Err(err) => {
                         let _ = tx
                             .send(SwarmEvent::IncomingConnectionError {
-                                // TODO:
                                 remote_addr: Multiaddr::empty(),
                                 error: err,
                             })
@@ -797,6 +801,7 @@ impl Swarm {
     }
 
     fn dial_addr<F: FnOnce(Result<&mut Connection>) + Send + 'static>(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>, f: F) {
+        log::debug!("dialing {:?} with addrs={:?}", peer_id, addrs);
         // if dialing to itself...
         if self.local_peer_id().eq(&peer_id) {
             f(Err(SwarmError::DialToSelf));
@@ -816,6 +821,7 @@ impl Swarm {
     }
 
     fn dial_peer<F: FnOnce(Result<&mut Connection>) + Send + 'static>(&mut self, peer_id: PeerId, use_dht: bool, f: F) {
+        log::debug!("dialing {:?}", peer_id);
         // if dialing to itself...
         if self.local_peer_id().eq(&peer_id) {
             f(Err(SwarmError::DialToSelf));
@@ -990,7 +996,7 @@ impl Swarm {
     ///
     /// start a Task for accepting new sub-stream from the connection
     fn handle_connection_opened(&mut self, stream_muxer: IStreamMuxer, dir: Direction, tid: Option<TransactionId>) -> Result<()> {
-        log::trace!("handle_connection_opened: {:?} {:?}", stream_muxer, dir);
+        log::debug!("handle_connection_opened: {:?} {:?}", stream_muxer, dir);
 
         let metric = self.metric.clone();
 
@@ -1045,7 +1051,7 @@ impl Swarm {
                 match r {
                     Ok(raw_stream) => {
                         // well, got the raw stream, now do protocol selection
-                        log::trace!("run protocol selection for inbound stream={:?}", raw_stream);
+                        log::debug!("run protocol selection for inbound stream={:?}", raw_stream);
 
                         // now it's time to do multistream multiplexing for inbound stream
                         let result = muxer.select_inbound(raw_stream).await;
@@ -1086,7 +1092,7 @@ impl Swarm {
                 h.await;
             }
 
-            log::trace!("accept-task exiting...");
+            log::debug!("{:?} accept-task exiting...", stream_muxer);
         });
 
         // now we have the handle, move it into Connection
@@ -1100,6 +1106,7 @@ impl Swarm {
         // note that it must cleanup the tid entry
         if let Some(id) = tid {
             // the entry must be there
+            log::debug!("invoking dial transaction {:?}", tid);
             let callback = self.dial_transactions.remove(&id).expect("no match tid found");
             callback(Ok(&mut connection));
         }
@@ -1115,7 +1122,9 @@ impl Swarm {
     }
 
     /// Handles outgoing connection error.
-    fn handle_connection_error(&mut self, _peer_id: PeerId, error: SwarmError, tid: TransactionId) -> Result<()> {
+    fn handle_connection_error(&mut self, peer_id: PeerId, error: SwarmError, tid: TransactionId) -> Result<()> {
+        log::debug!("handle_connection_error: {:?} {:?} {:?}", peer_id, error, tid);
+
         //execute dial callback for post processing
         let callback = self.dial_transactions.remove(&tid).expect("no match tid found");
         callback(Err(error));
@@ -1128,7 +1137,7 @@ impl Swarm {
     ///
     /// Use channel to received message that sent by another task
     fn handle_stream_opened(&mut self, view: SubstreamView) -> Result<()> {
-        log::trace!("handle_stream_opened: {:?}", view);
+        log::debug!("handle_stream_opened: {:?}", view);
         // add stream id to the connection substream list
         if let Some(c) = self.connections_by_id.get_mut(&view.cid) {
             c.add_stream(view)
@@ -1138,7 +1147,7 @@ impl Swarm {
 
     /// Handles closing stream
     fn handle_stream_closed(&mut self, cid: ConnectionId, sid: StreamId) -> Result<()> {
-        log::trace!("handle_stream_closed: {:?}/{:?}", cid, sid);
+        log::debug!("handle_stream_closed: {:?}/{:?}", cid, sid);
         // delete sub-stream from the connection substream list
         if let Some(c) = self.connections_by_id.get_mut(&cid) {
             c.del_stream(sid)
@@ -1150,7 +1159,7 @@ impl Swarm {
     ///
     /// start a Task for accepting new sub-stream from the connection
     fn handle_connection_closed(&mut self, cid: ConnectionId) -> Result<()> {
-        log::trace!("handle_connection_closed: {:?}", cid);
+        log::debug!("handle_connection_closed: {:?}", cid);
 
         // try to retrieve the Connection by looking up 'connections_by_id'
         if let Some(mut connection) = self.connections_by_id.remove(&cid) {
@@ -1206,7 +1215,7 @@ impl Swarm {
     }
 
     fn handle_observed_address(&mut self, observed_addr: Multiaddr, cid: ConnectionId) {
-        log::trace!("identify observed_addr: {} cid={:?}", observed_addr, cid);
+        log::debug!("identify observed_addr: {} cid={:?}", observed_addr, cid);
         let addrs = self.address_translation(&observed_addr).collect::<Vec<_>>();
         for addr in addrs {
             self.external_addrs.add(addr);

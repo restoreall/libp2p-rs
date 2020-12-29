@@ -38,7 +38,6 @@ use libp2prs_core::{
     transport::{TransportError, TransportListener},
     Transport,
 };
-use log::debug;
 use socket2::{Domain, Socket, Type};
 use std::{
     convert::TryFrom,
@@ -130,7 +129,7 @@ impl Transport for TcpConfig {
             };
 
         let ma = ip_to_multiaddr(local_addr.ip(), port);
-        debug!("Listening on {:?} expanded to {:?}", ma, listen_addrs);
+        log::debug!("Listening on {:?} expanded to {:?}", ma, listen_addrs);
 
         let listener = TcpTransListener {
             inner: listener,
@@ -148,7 +147,7 @@ impl Transport for TcpConfig {
     async fn dial(&mut self, addr: Multiaddr) -> Result<Self::Output, TransportError> {
         let socket_addr = if let Ok(socket_addr) = multiaddr_to_socketaddr(&addr) {
             if socket_addr.port() == 0 || socket_addr.ip().is_unspecified() {
-                debug!("Instantly refusing dialing {}, as it is invalid", addr);
+                log::debug!("Instantly refusing dialing {}, as it is invalid", addr);
                 return Err(TransportError::IoError(io::ErrorKind::ConnectionRefused.into()));
             }
             socket_addr
@@ -156,7 +155,7 @@ impl Transport for TcpConfig {
             return Err(TransportError::MultiaddrNotSupported(addr));
         };
 
-        debug!("Dialing {}", addr);
+        log::debug!("Dialing {}", addr);
 
         let stream = TcpStream::connect(&socket_addr).await?;
         apply_config(&self, &stream)?;
@@ -239,9 +238,9 @@ impl ConnectionInfo for TcpTransStream {
 impl Drop for TcpTransStream {
     fn drop(&mut self) {
         if let Ok(addr) = self.inner.peer_addr() {
-            debug!("Dropped TCP connection to {:?}", addr);
+            log::debug!("Dropped TCP connection to {:?}", addr);
         } else {
-            debug!("Dropped TCP connection to undeterminate peer");
+            log::debug!("Dropped TCP connection to unterminated peer");
         }
     }
 }
@@ -326,6 +325,7 @@ fn host_addresses(port: u16) -> io::Result<Vec<(IpAddr, IpNet, Multiaddr)>> {
                 IpNet::V6(ipnet)
             }
         };
+        log::info!("adding host address {:}", ma);
         addrs.push((ip, ipn, ma))
     }
     Ok(addrs)

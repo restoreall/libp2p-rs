@@ -107,7 +107,7 @@ impl Drop for Substream {
             let cid = self.cid();
             let sid = StreamId(inner.id());
             let mut s = self.ctrl.clone();
-            log::trace!("garbage collecting stream {:?}/{:?} {:?}", cid, sid, self.protocol());
+            log::debug!("garbage collecting stream {:?}/{:?} {:?}", cid, sid, self.protocol());
 
             async_std::task::spawn(async move {
                 let _ = s.send(SwarmControlCmd::CloseStream(cid, sid)).await;
@@ -227,11 +227,16 @@ impl WriteEx for Substream {
 
     // try to send a CloseStream command to Swarm, then close inner stream
     async fn close2(&mut self) -> Result<(), io::Error> {
-        // to ask Swarm to remove myself
-        let cid = self.cid();
-        let sid = self.id();
-        let _ = self.ctrl.send(SwarmControlCmd::CloseStream(cid, sid)).await;
-        self.inner.as_mut().expect("already closed?").close2().await
+        let inner = self.inner.take();
+        if let Some(mut inner) = inner {
+            // to ask Swarm to remove myself
+            let cid = self.cid();
+            let sid = StreamId(inner.id());
+            let _ = self.ctrl.send(SwarmControlCmd::CloseStream(cid, sid)).await;
+            inner.close2().await
+        } else {
+            Ok(())
+        }
     }
 }
 

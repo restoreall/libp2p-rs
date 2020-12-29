@@ -260,7 +260,7 @@ impl Notifiee for KadProtocolHandler {
 impl ProtocolHandler for KadProtocolHandler {
     async fn handle(&mut self, mut stream: Substream, _info: <Self as UpgradeInfo>::Info) -> Result<(), Box<dyn Error>> {
         let source = stream.remote_peer();
-        log::trace!("Kad Handler receive packet from {}", source);
+        log::trace!("Kad Handler opened for remote {:?}", source);
         loop {
             let packet = stream.read_one(self.config.max_packet_size).await?;
             let request = proto::Message::decode(&packet[..]).map_err(|_| KadError::Decode)?;

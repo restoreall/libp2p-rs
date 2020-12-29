@@ -63,7 +63,7 @@ impl Muxer {
 
 impl Muxer {
     pub(crate) fn add_protocol_handler(&mut self, p: IProtocolHandler) {
-        log::trace!(
+        log::debug!(
             "adding protocol handler: {:?}",
             p.protocol_info()
         );
@@ -86,7 +86,7 @@ impl Muxer {
         let (proto, socket) = negotiator.negotiate(socket).await?;
         let handler = self.protocol_handlers.get_mut(&proto).unwrap().clone();
 
-        log::info!("select_inbound {:?}", proto);
+        log::debug!("muxer select inbound {:?}", proto);
 
         Ok((handler as IProtocolHandler, socket, proto))
     }

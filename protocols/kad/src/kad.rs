@@ -516,7 +516,7 @@ where
     ///        with the new peer.
     ///    2.2 if there is no such peer exists in that bucket, do nothing -> ignore adding peer
     fn try_add_peer(&mut self, peer: PeerId, queried: bool) {
-        log::trace!("trying to add a peer to routing table: {:?}", peer);
+        log::debug!("trying to add a peer to routing table: {:?}, query={}", peer, queried);
 
         let timeout = self.check_kad_peer_interval;
         let now = Instant::now();
@@ -531,7 +531,7 @@ where
             kbucket::Entry::Absent(mut entry) => {
                 let info = PeerInfo::new(queried);
                 if entry.insert(info.clone()) {
-                    log::trace!("Peer added to routing table: {} {:?}", peer, info);
+                    log::debug!("Peer added to routing table: {} {:?}", peer, info);
                 } else {
                     log::debug!("Bucket full, trying to replace an old node for {}", peer);
                     // try replacing an 'old' peer
@@ -563,7 +563,7 @@ where
     /// Returns `None` if the peer was not in the routing table,
     /// not even pending insertion.
     fn try_remove_peer(&mut self, peer: PeerId) -> Option<kbucket::EntryView<kbucket::Key<PeerId>, PeerInfo>> {
-        log::trace!("trying to remove a peer from routing table: {:?}", peer);
+        log::debug!("trying to remove a peer from routing table: {:?}", peer);
         let key = kbucket::Key::new(peer);
         match self.kbuckets.entry(&key) {
             kbucket::Entry::Present(entry) => Some(entry.remove()),
@@ -803,6 +803,7 @@ where
     /// > **Note**: Bootstrapping requires at least one node of the DHT to be known.
     async fn bootstrap(&mut self) {
         if !self.bootstrapped {
+            log::debug!("bootstrapping...");
             let mut poster = self.poster();
             let _ = poster.post(ProtocolEvent::Refresh(RefreshStage::Start)).await;
         }
@@ -1044,6 +1045,8 @@ where
         // overridden as it avoids having to load the existing record in the
         // first place.
 
+        log::debug!("adding record to store: {:?}", record);
+
         if !record.is_expired(now) {
             // The record is cloned because of the weird libp2p protocol
             // requirement to send back the value in the response, although this
@@ -1051,7 +1054,7 @@ where
             match self.store.put(record.clone()) {
                 Ok(()) => log::debug!("Record stored: {:?}; {} bytes", record.key, record.value.len()),
                 Err(e) => {
-                    log::info!("Record not stored: {:?}", e);
+                    log::debug!("Record not stored: {:?}", e);
                     return Err(e);
                 }
             }
@@ -1073,6 +1076,7 @@ where
     /// Processes a provider record received from a peer.
     fn handle_add_provider(&mut self, key: record::Key, provider: KadPeer) {
         if &provider.node_id != self.kbuckets.self_key().preimage() {
+            log::debug!("adding provider to store: {:?}", provider);
             // add provider's addresses to peerstore
             self.swarm
                 .as_ref()
@@ -1081,7 +1085,7 @@ where
 
             let record = ProviderRecord::new(key, provider.node_id, self.provider_record_ttl.map(|ttl| Instant::now() + ttl));
             if let Err(e) = self.store.add_provider(record) {
-                log::info!("Provider record not stored: {:?}", e);
+                log::debug!("Provider record not stored: {:?}", e);
             }
         }
     }
@@ -1316,6 +1320,8 @@ where
 
     // Handles Kad request messages. ProtoBuf message decoded by handler.
     fn handle_kad_request(&mut self, request: KadRequestMsg, source: PeerId, reply: oneshot::Sender<Result<Option<KadResponseMsg>>>) {
+        log::debug!("handle Kad request message {:?} from {:}", request, source);
+
         // Obviously we found a Kad peer
         self.try_add_peer(source.clone(), true);
 

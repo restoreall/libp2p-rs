@@ -512,7 +512,7 @@ impl IterativeQuery {
                     QueryType::GetClosestPeers => {}
                     QueryType::FindPeer => {
                         if let Some(peer) = closest_peers.has_target() {
-                            log::info!("FindPeer: successfully located, {:?}", peer);
+                            log::debug!("FindPeer: successfully located, {:?}", peer);
                             query_results.found_peer = Some(peer);
                             return true;
                         }
@@ -520,7 +520,7 @@ impl IterativeQuery {
                     QueryType::GetProviders { count, .. } => {
                         // update providers
                         if let Some(provider) = provider {
-                            log::trace!("GetProviders: provider found {:?} key={:?}", provider, me.key);
+                            log::debug!("GetProviders: provider found {:?} key={:?}", provider, me.key);
 
                             // update the PeerStore for the multiaddr, add all multiaddr of Closer peers
                             // to PeerStore
@@ -538,7 +538,7 @@ impl IterativeQuery {
                                 }
                                 // check if we have enough providers
                                 if query_results.providers.as_ref().map_or(0, |p| p.len()) >= count {
-                                    log::info!("GetProviders: got enough provider for {:?}, limit={}", me.key, count);
+                                    log::debug!("GetProviders: got enough provider for {:?}, limit={}", me.key, count);
                                     return true;
                                 }
                             }
@@ -546,7 +546,7 @@ impl IterativeQuery {
                     }
                     QueryType::GetRecord { quorum_needed, .. } => {
                         if let Some(record) = record {
-                            log::trace!("GetRecord: record found {:?} key={:?}", record, me.key);
+                            log::debug!("GetRecord: record found {:?} key={:?}", record, me.key);
 
                             let pr = PeerRecord {
                                 peer: Some(source),
@@ -604,6 +604,8 @@ impl IterativeQuery {
     where
         F: FnOnce(Result<QueryResult>) + Send + 'static,
     {
+        log::debug!("run iterative query {:?} for {:?}", self.query_type, self.key);
+
         // check for empty seed peers
         if self.seeds.is_empty() {
             log::info!("no seeds, abort running");
@@ -672,20 +674,20 @@ impl IterativeQuery {
                 let update = rx.next().await.expect("must");
                 let is_completed = me.handle_update(update, &mut query_results, &mut closest_peers).await;
                 if is_completed {
-                    log::info!("iterative query completed");
+                    log::debug!("iterative query completed due to value found");
                     break;
                 }
 
                 // starvation, if no peer to contact and no pending query
                 if closest_peers.is_starved() {
                     //return true, LookupStarvation, nil
-                    log::info!("query starvation, if no peer to contact and no pending query");
+                    log::debug!("iterative query terminated due to starvation(no peer to contact and no pending query)");
                     break;
                 }
                 // meet the k_value? meaning lookup completed
                 if closest_peers.can_terminate(beta_value) {
                     //return true, LookupCompleted, nil
-                    log::info!("query got enough results {}, completed", beta_value);
+                    log::debug!("iterative query terminated due to no more closer peer");
                     break;
                 }
 
@@ -693,7 +695,7 @@ impl IterativeQuery {
                 // Note: NumWaiting will be updated before invoking job.execute()
                 let num_jobs = alpha_value.checked_sub(closest_peers.num_of_state(PeerState::Waiting)).unwrap();
 
-                log::info!("iteratively querying, starting {} query jobs at many", num_jobs);
+                log::debug!("iterative query, starting {} query jobs at most", num_jobs);
 
                 let peer_iter = closest_peers.peers_in_state_mut(PeerState::NotContacted, num_jobs);
                 for peer in peer_iter {
@@ -727,6 +729,9 @@ impl IterativeQuery {
                 .peers_in_states(wanted_states, k_value)
                 .map(|p| p.peer.clone())
                 .collect::<Vec<_>>();
+
+            log::debug!("iterative query, found {} closer peers", peers.len());
+
             if !peers.is_empty() {
                 query_results.closest_peers = Some(peers);
             }

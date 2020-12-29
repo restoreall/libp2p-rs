@@ -209,7 +209,7 @@ impl Connection {
 
     /// Closes the inner stream_muxer. Spawn a task to avoid blocking.
     pub fn close(&self) {
-        log::trace!("closing {:?}", self);
+        log::debug!("closing {:?}", self);
 
         let mut stream_muxer = self.stream_muxer.clone();
         // spawns a task to close the stream_muxer, later connection will cleaned up
@@ -259,12 +259,12 @@ impl Connection {
 
     /// Adds a substream id to the list.
     pub(crate) fn add_stream(&mut self, view: SubstreamView) {
-        log::trace!("adding sub {:?} to {:?}", view, self);
+        log::debug!("adding sub {:?} to connection", view);
         self.substreams.push(view);
     }
     /// Removes a substream id from the list.
     pub(crate) fn del_stream(&mut self, sid: StreamId) {
-        log::trace!("removing sub {:?} from {:?}", sid, self);
+        log::debug!("removing sub {:?} from connection", sid);
         self.substreams.retain(|s| s.id != sid);
     }
 
@@ -324,7 +324,7 @@ impl Connection {
                     }
                     Err(err) => {
                         // looks like the peer doesn't support the protocol
-                        log::warn!("Ping protocol not supported: {:?}", err);
+                        log::info!("Ping protocol not supported: {:?}", err);
                         Err(err)
                     }
                 };
@@ -341,7 +341,7 @@ impl Connection {
                 }
             }
 
-            log::trace!("ping task exiting...");
+            log::debug!("ping task exiting...");
         });
 
         self.ping_handle = Some(handle);
@@ -350,7 +350,7 @@ impl Connection {
     /// Stops the Ping service on this connection
     pub(crate) async fn stop_ping(&mut self) {
         if let Some(h) = self.ping_handle.take() {
-            log::trace!("stopping Ping service for {:?}...", self.id);
+            log::debug!("stopping Ping service for {:?}...", self.id);
             self.ping_running.store(false, Ordering::Relaxed);
             h.await;
             //h.cancel().await;
@@ -376,7 +376,7 @@ impl Connection {
                 }
                 Err(err) => {
                     // looks like the peer doesn't support the protocol
-                    log::warn!("Identify protocol not supported: {:?}", err);
+                    log::info!("Identify protocol not supported: {:?}", err);
                     Err(err)
                 }
             };
@@ -387,7 +387,7 @@ impl Connection {
                 })
                 .await;
 
-            log::trace!("identify task exiting...");
+            log::debug!("identify task exiting...");
         });
 
         self.identify_handle = Some(handle);
@@ -395,7 +395,7 @@ impl Connection {
 
     pub(crate) async fn stop_identify(&mut self) {
         if let Some(h) = self.identify_handle.take() {
-            log::trace!("stopping Identify service for {:?}...", self.id);
+            log::debug!("stopping Identify service for {:?}...", self.id);
             h.cancel().await;
         }
     }
@@ -426,19 +426,19 @@ impl Connection {
                 }
                 Err(err) => {
                     // looks like the peer doesn't support the protocol
-                    log::warn!("Identify push protocol not supported: {:?}", err);
+                    log::info!("Identify push protocol not supported: {:?}", err);
                     //Err(err)
                 }
             }
 
-            log::trace!("identify push task exiting...");
+            log::debug!("identify push task exiting...");
         });
 
         self.identify_push_handle = Some(handle);
     }
     pub(crate) async fn stop_identify_push(&mut self) {
         if let Some(h) = self.identify_push_handle.take() {
-            log::trace!("stopping Identify Push service for {:?}...", self.id);
+            log::debug!("stopping Identify Push service for {:?}...", self.id);
             h.cancel().await;
         }
     }
@@ -483,7 +483,7 @@ async fn open_stream_internal(
     metric: Arc<Metric>,
 ) -> Result<Substream, TransportError> {
 
-    log::debug!("about to open substream on {:?} {:?}", cid, pids);
+    log::debug!("opening substream on {:?} {:?}", cid, pids);
 
     let raw_stream = stream_muxer.open_stream().await?;
     let la = stream_muxer.local_multiaddr();
@@ -503,7 +503,7 @@ async fn open_stream_internal(
             Ok(stream)
         }
         Err(err) => {
-            log::info!("failed outbound protocol selection {:?} {:?}", cid, err);
+            log::debug!("failed outbound protocol selection {:?} {:?}", cid, err);
             Err(TransportError::NegotiationError(err))
         }
     }

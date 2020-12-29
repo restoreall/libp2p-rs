@@ -195,7 +195,7 @@ impl UpgradeInfo for IdentifyHandler {
 
 impl Notifiee for IdentifyHandler {
     fn connected(&mut self, connection: &mut Connection) {
-        log::trace!("starting Identify service for {:?}", connection);
+        log::debug!("starting Identify service for {:?}", connection);
         connection.start_identify();
     }
 }
@@ -205,13 +205,13 @@ impl ProtocolHandler for IdentifyHandler {
     /// The IdentifyHandler's inbound protocol.
     /// Simply wait for any thing that coming in then send back
     async fn handle(&mut self, stream: Substream, _info: <Self as UpgradeInfo>::Info) -> Result<(), Box<dyn Error>> {
-        log::trace!("Identify Protocol handling on {:?}", stream);
+        log::debug!("Identify Protocol handling on {:?}", stream);
 
         let (tx, rx) = oneshot::channel();
         self.ctrl.send(SwarmControlCmd::IdentifyInfo(tx)).await?;
         let identify_info = rx.await??;
 
-        log::trace!("IdentifyHandler sending identify info to client...");
+        log::debug!("IdentifyHandler sending identify info to client...");
 
         produce_message(stream, identify_info).await.map_err(|e| e.into())
     }
@@ -260,7 +260,7 @@ impl UpgradeInfo for IdentifyPushHandler {
 impl Notifiee for IdentifyPushHandler {
     fn connected(&mut self, connection: &mut Connection) {
         if self.config.push {
-            log::trace!("starting Identify Push service for {:?}", connection);
+            log::debug!("starting Identify Push service for {:?}", connection);
             connection.start_identify_push();
         }
     }
@@ -271,7 +271,7 @@ impl ProtocolHandler for IdentifyPushHandler {
     // receive the message and consume it
     async fn handle(&mut self, stream: Substream, _info: <Self as UpgradeInfo>::Info) -> Result<(), Box<dyn Error>> {
         let cid = stream.cid();
-        log::trace!("Identify Push Protocol handling on {:?}", stream);
+        log::debug!("Identify Push Protocol handling on {:?}", stream);
 
         let result = process_message(stream).await.map_err(TransportError::into);
 

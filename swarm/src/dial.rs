@@ -108,7 +108,7 @@ impl DialLimiter {
         log::debug!("[DialLimiter] executing job through limiter, {} {}", dj.peer, dj.addr);
 
         if self.dial_consuming.load(Ordering::SeqCst) >= self.dial_limit {
-            log::info!(
+            log::debug!(
                 "[DialLimiter] Terminate while waiting on dial token; peer: {}; addr: {}; consuming: {:?}; limit: {:?};",
                 dj.peer,
                 dj.addr,
@@ -179,11 +179,11 @@ impl DialBackoff {
 
     /// Returns whether the client should backoff dialing peer at address
     async fn find_peer(&self, peer_id: &PeerId, ma: &Multiaddr) -> bool {
-        log::trace!("[DialBackoff] lookup backoff,addr={:?}", ma);
+        log::debug!("[DialBackoff] lookup backoff,addr={:?}", ma);
         let lock = self.entries.lock().await;
         if let Some(peer_map) = lock.get(peer_id) {
             if let Some(backoff) = peer_map.get(&ma.to_string()) {
-                log::trace!(
+                log::debug!(
                     "[DialBackoff] is backoff: Instant::now() ={:?},ma={:?},backoff={:?}",
                     Instant::now(),
                     ma,
@@ -213,11 +213,11 @@ impl DialBackoff {
             }
             backoff.until = Instant::now() + backoff_time;
             backoff.tries += 1;
-            log::trace!("[DialBackoff] init backoff,{:?}", backoff);
+            log::debug!("[DialBackoff] init backoff,{:?}", backoff);
         } else {
             let until = Instant::now() + BACKOFF_BASE;
             let backoff = peer_map.insert(ma.to_string(), BackoffAddr { tries: 1, until });
-            log::trace!("[DialBackoff] update backoff,{:?}", backoff);
+            log::debug!("[DialBackoff] update backoff,{:?}", backoff);
         }
     }
 
@@ -228,7 +228,7 @@ impl DialBackoff {
 
         let me = self.clone();
         task::spawn(async move {
-            log::trace!("[DialBackoff] starting backoff background task...");
+            log::info!("[DialBackoff] starting backoff background task...");
 
             let interval = me.max_time.unwrap_or(BACKOFF_MAX);
             loop {
@@ -261,7 +261,7 @@ impl DialBackoff {
                     if backoff_time > BACKOFF_MAX {
                         backoff_time = BACKOFF_MAX
                     }
-                    log::trace!(
+                    log::debug!(
                         "[DialBackoff]  now={:?},backoff.until + backoff_time={:?}",
                         now,
                         (backoff.until + backoff_time)
@@ -389,9 +389,9 @@ impl AsyncDialer {
             let active_param = dial_param.clone();
             let r = AsyncDialer::dial_addrs(active_param).await;
             if let Err(e) = r {
-                log::info!("[Dialer] dialer failed at attempt={} error={:?}", dial_count, e);
+                log::debug!("[Dialer] dialer failed at attempt={} error={:?}", dial_count, e);
                 if dial_count < dial_param.attempts {
-                    log::info!(
+                    log::debug!(
                         "[Dialer] All addresses of {:?} cannot be dialed successfully. Now try dialing again, attempts={}",
                         dial_param.peer_id,
                         dial_count
@@ -434,7 +434,7 @@ impl AsyncDialer {
         }
 
         if addrs.is_empty() {
-            log::info!(
+            log::debug!(
                 "unfortunately all {} addresses for {:?} are in backoff list, failed",
                 addrs_origin.len(),
                 peer_id
@@ -471,7 +471,7 @@ impl AsyncDialer {
             });
         }
 
-        log::trace!("total {} dialing jobs started, collecting...", num_jobs);
+        log::debug!("total {} dialing jobs started, collecting...", num_jobs);
         AsyncDialer::collect_dialing_result(rx, num_jobs, param).await
     }
 
@@ -484,7 +484,7 @@ impl AsyncDialer {
     ) -> Result<IStreamMuxer> {
         for i in 0..jobs {
             let peer_id = param.peer_id.clone();
-            log::trace!("[Dialer] job {:?} finished jobs={} ...", peer_id, i);
+            log::debug!("[Dialer] job {:?} finished jobs={} ...", peer_id, i);
             let r = rx.next().await;
             match r {
                 Some((Ok(stream_muxer), addr)) => {
@@ -493,11 +493,11 @@ impl AsyncDialer {
                     // verify if the PeerId matches expectation, otherwise,
                     // it is a bad outgoing connection
                     if peer_id == reported_pid {
-                        log::info!("[Dialer] job {:?} succeeded, {:?}", peer_id, stream_muxer);
+                        log::debug!("[Dialer] job {:?} succeeded, {:?}", peer_id, stream_muxer);
                         // return here, ignore the rest of jobs
                         return Ok(stream_muxer);
                     } else {
-                        log::info!(
+                        log::debug!(
                             "[Dialer] job failed due to peer id mismatch conn={:?} wanted={:?} got={:?}",
                             stream_muxer,
                             peer_id,
@@ -507,7 +507,7 @@ impl AsyncDialer {
                     }
                 }
                 Some((Err(err), addr)) => {
-                    log::info!("[Dialer] job {:?} failed: addr={:?},error={:?}", peer_id, addr.clone(), err);
+                    log::debug!("[Dialer] job {:?} failed: addr={:?},error={:?}", peer_id, addr.clone(), err);
                     if let SwarmError::Transport(_) = err {
                         // add to backoff list if transport error reported
                         param.backoff.add_peer(peer_id, addr).await;
