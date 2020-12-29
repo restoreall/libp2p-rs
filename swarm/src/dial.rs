@@ -179,12 +179,12 @@ impl DialBackoff {
 
     /// Returns whether the client should backoff dialing peer at address
     async fn find_peer(&self, peer_id: &PeerId, ma: &Multiaddr) -> bool {
-        log::debug!("[DialBackoff] lookup backoff,addr={:?}", ma);
+        log::debug!("[DialBackoff] lookup checking, addr={:?}", ma);
         let lock = self.entries.lock().await;
         if let Some(peer_map) = lock.get(peer_id) {
             if let Some(backoff) = peer_map.get(&ma.to_string()) {
                 log::debug!(
-                    "[DialBackoff] is backoff: Instant::now() ={:?},ma={:?},backoff={:?}",
+                    "[DialBackoff] backoff found: Instant={:?}, ma={:?}, backoff={:?}",
                     Instant::now(),
                     ma,
                     backoff
@@ -213,11 +213,11 @@ impl DialBackoff {
             }
             backoff.until = Instant::now() + backoff_time;
             backoff.tries += 1;
-            log::debug!("[DialBackoff] init backoff,{:?}", backoff);
+            log::debug!("[DialBackoff] adding backoff {:?}", backoff);
         } else {
             let until = Instant::now() + BACKOFF_BASE;
             let backoff = peer_map.insert(ma.to_string(), BackoffAddr { tries: 1, until });
-            log::debug!("[DialBackoff] update backoff,{:?}", backoff);
+            log::debug!("[DialBackoff] updating backoff {:?}", backoff);
         }
     }
 
@@ -236,8 +236,8 @@ impl DialBackoff {
                 match either {
                     Either::Left((_, _)) => {
                         // we are closed anyway, break
-                        log::info!("[DialBackoff] get closed, exiting...");
-                        return;
+                        log::info!("[DialBackoff] closed, exiting...");
+                        break;
                     }
                     Either::Right((_, _)) => {
                         log::trace!("[DialBackoff] cleaning up backoff...");
@@ -251,18 +251,16 @@ impl DialBackoff {
 
     async fn do_cleanup(self) {
         let clean_peer_ids = {
-            let mut clean_peer_ids = Vec::<PeerId>::new();
+            let mut clean_peer_ids = vec![];
+            let now = Instant::now();
             let lock = self.entries.lock().await;
             for (p, e) in lock.iter() {
                 let mut good = false;
-                let now = Instant::now();
                 for backoff in e.values() {
-                    let mut backoff_time = BACKOFF_BASE + BACKOFF_COEF * (backoff.tries * backoff.tries);
-                    if backoff_time > BACKOFF_MAX {
-                        backoff_time = BACKOFF_MAX
-                    }
+                    let backoff_time = Duration::min(BACKOFF_BASE + BACKOFF_COEF * (backoff.tries * backoff.tries), BACKOFF_MAX);
+
                     log::debug!(
-                        "[DialBackoff]  now={:?},backoff.until + backoff_time={:?}",
+                        "[DialBackoff] now={:?} backoff.until + backoff_time={:?}",
                         now,
                         (backoff.until + backoff_time)
                     );
@@ -392,7 +390,7 @@ impl AsyncDialer {
                 log::debug!("[Dialer] dialer failed at attempt={} error={:?}", dial_count, e);
                 if dial_count < dial_param.attempts {
                     log::debug!(
-                        "[Dialer] All addresses of {:?} cannot be dialed successfully. Now try dialing again, attempts={}",
+                        "[Dialer] All addresses of {:?} cannot be dialed to. Now try dialing again, attempts={}",
                         dial_param.peer_id,
                         dial_count
                     );

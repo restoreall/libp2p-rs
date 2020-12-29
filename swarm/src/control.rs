@@ -42,7 +42,6 @@ type Result<T> = std::result::Result<T, SwarmError>;
 /// The `Swarm` controller manipulates the [`Swarm`] via these commands.
 ///
 #[derive(Debug)]
-
 pub enum SwarmControlCmd {
     /// Open a connection to the remote peer with address specified.
     Connect(PeerId, Vec<Multiaddr>, oneshot::Sender<Result<()>>),
@@ -175,7 +174,7 @@ impl Control {
     ///
     /// All listened addresses on interface and the observed addresses
     /// from Identify protocol.
-    pub async fn retrieve_all_addrs(&mut self) -> Result<Vec<Multiaddr>> {
+    pub async fn self_addrs(&mut self) -> Result<Vec<Multiaddr>> {
         let (tx, rx) = oneshot::channel();
         self.sender.send(SwarmControlCmd::SelfAddresses(tx)).await?;
         rx.await?

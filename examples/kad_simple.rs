@@ -38,6 +38,8 @@ use libp2prs_yamux as yamux;
 use libp2prs_kad::Control as KadControl;
 
 use xcli::*;
+use std::convert::TryFrom;
+
 
 struct MyCliData {
     kad: KadControl,
@@ -47,12 +49,29 @@ struct MyCliData {
 
 fn main() {
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    if std::env::args().nth(1) == Some("server".to_string()) {
-        log::info!("Starting server ......");
-        run_server();
+    if std::env::args().len() == 3 {
+        log::info!("Starting server...");
+        let a1 = std::env::args().nth(1).unwrap();
+        let a2 = std::env::args().nth(2).unwrap();
+
+        let peer = match PeerId::try_from(a1) {
+            Ok(peer) => peer,
+            Err(e) => {
+                println!("bad peer id: {:?}", e);
+                return;
+            }
+        };
+        let addr = match Multiaddr::try_from(a2) {
+            Ok(addr) => addr,
+            Err(e) => {
+                println!("bad multiaddr: {:?}", e);
+                return;
+            }
+        };
+
+        run_server(peer, addr);
     } else {
-        log::info!("Starting client ......");
-        //run_client();
+        println!("Usage: {} <bootstrap-address>", std::env::args().nth(0).unwrap());
     }
 }
 
@@ -61,7 +80,7 @@ lazy_static! {
 }
 
 #[allow(clippy::empty_loop)]
-fn run_server() {
+fn run_server(bootstrap_peer: PeerId, bootstrap_addr: Multiaddr) {
     let keys = SERVER_KEY.clone();
 
     let listen_addr1: Multiaddr = "/ip4/0.0.0.0/tcp/8086".parse().unwrap();
@@ -91,9 +110,7 @@ fn run_server() {
     swarm.start();
 
     async_std::task::block_on(async {
-        let peer: PeerId = "QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ".parse().unwrap();
-        let addr = "/ip4/104.131.131.82/tcp/4001".parse().unwrap();
-        kad_control.add_node(peer, vec![addr]).await;
+        kad_control.add_node(bootstrap_peer, vec![bootstrap_addr]).await;
         kad_control.bootstrap().await;
     });
 
@@ -136,10 +153,11 @@ fn run_server() {
 
                 println!("Metric: {:?} {:?}", swarm.get_recv_count_and_size(), swarm.get_sent_count_and_size());
 
-                let addresses = swarm.retrieve_all_addrs().await;
+                let addresses = swarm.self_addrs().await;
                 println!("Addresses: {:?}", addresses);
 
-                //println!("AddrBook: {:?}", swarm.get_addrs_vec());
+                let addresses = swarm.dump_connections().await;
+                println!("Addresses: {:?}", addresses);
             });
             CmdExeCode::Ok
         }));

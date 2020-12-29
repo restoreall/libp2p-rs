@@ -526,6 +526,7 @@ where
                 // already in RT, update the node's aliveness if queried is true
                 if queried {
                     entry.value().set_aliveness(Instant::now());
+                    log::debug!("Peer updated: {:?}", entry.value());
                 }
             }
             kbucket::Entry::Absent(mut entry) => {
@@ -1165,7 +1166,7 @@ where
         task::spawn(async move {
             // As we get Swarm control, try getting Swarm self addresses
             let swarm = kad.swarm.as_mut().expect("must be Some");
-            kad.local_addrs = swarm.retrieve_all_addrs().await.expect("listen addrs > 0");
+            kad.local_addrs = swarm.self_addrs().await.expect("listen addrs > 0");
 
             let _ = kad.process_loop().await;
         });
@@ -1452,12 +1453,14 @@ where
                         target.into_preimage()
                     }).collect::<Vec<_>>();
 
+                log::debug!("random nodes generated: {:?}", peers);
+
                 let mut control = self.control();
                 let mut poster = self.poster();
                 // start a separate task to do walking random Ids
                 task::spawn(async move {
                     for peer in peers {
-                        log::debug!("bootstrap: walk random node for {:?}", peer);
+                        log::debug!("bootstrap: walk random node {:?}", peer);
                         let _ = control.lookup(peer.into()).await;
                     }
                     let _ = poster.post(ProtocolEvent::Refresh(RefreshStage::Completed)).await;

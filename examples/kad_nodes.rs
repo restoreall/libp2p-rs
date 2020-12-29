@@ -230,7 +230,7 @@ fn get_network_info(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
         let r = swarm.retrieve_networkinfo().await;
         println!("NetworkInfo: {:?}", r);
         println!("Metric: {:?} {:?}", swarm.get_recv_count_and_size(), swarm.get_sent_count_and_size());
-        let addresses = swarm.retrieve_all_addrs().await;
+        let addresses = swarm.self_addrs().await;
         println!("Addresses: {:?}", addresses);
     });
     CmdExeCode::Ok
