@@ -75,7 +75,7 @@ pub enum DumpCommand {
     /// Dump all active connections.
     Connections(oneshot::Sender<Result<Vec<ConnectionView>>>),
     /// Dump all substreams of a connection.
-    Streams(ConnectionId, oneshot::Sender<Result<Vec<SubstreamView>>>),
+    Streams(PeerId, oneshot::Sender<Result<Vec<SubstreamView>>>),
 }
 
 /// The `Swarm` controller.
@@ -194,9 +194,9 @@ impl Control {
         rx.await?
     }
 
-    pub async fn dump_streams(&mut self, cid: ConnectionId) -> Result<Vec<SubstreamView>> {
+    pub async fn dump_streams(&mut self, peer_id: PeerId) -> Result<Vec<SubstreamView>> {
         let (tx, rx) = oneshot::channel();
-        self.sender.send(SwarmControlCmd::Dump(DumpCommand::Streams(cid, tx))).await?;
+        self.sender.send(SwarmControlCmd::Dump(DumpCommand::Streams(peer_id, tx))).await?;
         rx.await?
     }
 

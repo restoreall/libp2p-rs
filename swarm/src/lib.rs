@@ -546,8 +546,8 @@ impl Swarm {
                             let _ = reply.send(r);
                         });
                     }
-                    DumpCommand::Streams(cid, reply) => {
-                        let _ = self.on_retrieve_substream_views(cid, |r| {
+                    DumpCommand::Streams(peer_id, reply) => {
+                        let _ = self.on_retrieve_substream_views(peer_id, |r| {
                             let _ = reply.send(r);
                         });
                     }
@@ -654,8 +654,8 @@ impl Swarm {
         Ok(())
     }
     /// Retrieves the substream views.
-    fn on_retrieve_substream_views(&mut self, cid: ConnectionId, f: impl FnOnce(Result<Vec<SubstreamView>>)) -> Result<()> {
-        f(self.get_substream_views(cid));
+    fn on_retrieve_substream_views(&mut self, pid: PeerId, f: impl FnOnce(Result<Vec<SubstreamView>>)) -> Result<()> {
+        f(self.get_substream_views(pid));
         Ok(())
     }
     /// Starts Swarm background task
@@ -669,10 +669,17 @@ impl Swarm {
     fn get_connection_views(&self) -> Vec<ConnectionView> {
         self.connections_by_id.iter().map(|(_,c)|c.to_view()).collect()
     }
-    fn get_substream_views(&self, cid: ConnectionId) -> Result<Vec<SubstreamView>> {
-        self.connections_by_id.get(&cid)
-            .map(|c| { c.substream_view() })
-            .ok_or(SwarmError::Internal)
+    fn get_substream_views(&self, peer_id: PeerId) -> Result<Vec<SubstreamView>> {
+        let r = self.connections_by_peer.get(&peer_id);
+
+        if let Some(cids) = r {
+            let c = cids.iter().filter_map(|cid| {
+                self.connections_by_id.get(cid).map(|c|c.substream_view())
+            }).flatten().collect();
+            Ok(c)
+        } else {
+            Err(SwarmError::NoConnection(peer_id))
+        }
     }
     /// Returns network information about the `Swarm`.
     fn get_network_info(&self) -> NetworkInfo {
