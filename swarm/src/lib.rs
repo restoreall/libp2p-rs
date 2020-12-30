@@ -56,6 +56,7 @@ pub mod metrics;
 pub mod ping;
 pub mod protocol_handler;
 pub mod substream;
+pub mod cli;
 
 pub use control::Control;
 pub use protocol_handler::DummyProtocolHandler;

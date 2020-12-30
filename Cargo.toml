@@ -28,7 +28,6 @@ libp2prs-dns = { path = "transports/dns", version = "0.1.0", package = "libp2prs
 libp2prs-websocket = { path = "transports/websocket", version = "0.1.0", package = "libp2prs-websocket" }
 libp2prs-swarm = { path = "swarm", version = "0.1.0", package = "libp2prs-swarm" }
 libp2prs-kad = { path = "protocols/kad", version = "0.1.0", package = "libp2prs-kad" }
-libp2prs-cli = { path = "cli", version = "0.1.0", package = "libp2prs-cli" }
 #xcli = { path = "xcli", version = "0.2.0", package = "xcli" }
 xcli = { git = "https://github.com/kingwel-xie/xcli-rs.git", branch = "master"}
 
@@ -82,7 +81,6 @@ members = [
   "transports/websocket",
   "multiaddr",
   "swarm",
-  "cli",
 ]
 
 [[example]]

@@ -1,8 +1,15 @@
-use libp2prs_swarm::Control;
 use async_std::task;
 use xcli::*;
+use crate::Control;
 
 pub const SWRM: &str = "swarm";
+
+pub fn add_swarm_commands(app: &mut App) {
+    app.add_subcommand(Command::new("swarm")
+        .about("show Swarm information")
+        .usage("swarm")
+        .action(get_network_info));
+}
 
 pub(crate) fn get_network_info(app: &App, _actions: &[&str]) -> XcliResult {
     let value_any = app.get_handler(SWRM)?;
@@ -17,9 +24,15 @@ pub(crate) fn get_network_info(app: &App, _actions: &[&str]) -> XcliResult {
     task::block_on(async {
         let r = swarm.retrieve_networkinfo().await;
         println!("NetworkInfo: {:?}", r);
+
         println!("Metric: {:?} {:?}", swarm.get_recv_count_and_size(), swarm.get_sent_count_and_size());
-        let addresses = swarm.retrieve_all_addrs().await;
+
+        let addresses = swarm.self_addrs().await;
         println!("Addresses: {:?}", addresses);
-        Ok(CmdExeCode::Ok)
-    })
+
+        let addresses = swarm.dump_connections().await;
+        println!("Addresses: {:?}", addresses);
+    });
+
+    Ok(CmdExeCode::Ok)
 }

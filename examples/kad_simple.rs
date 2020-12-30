@@ -39,12 +39,8 @@ use libp2prs_kad::Control as KadControl;
 
 use xcli::*;
 use std::convert::TryFrom;
-
-
-struct MyCliData {
-    kad: KadControl,
-    swarm: SwarmControl,
-}
+use libp2prs_swarm::cli::{SWRM, add_swarm_commands};
+use libp2prs_kad::cli::{DHT, add_dht_commands};
 
 
 fn main() {
@@ -114,53 +110,15 @@ fn run_server(bootstrap_peer: PeerId, bootstrap_addr: Multiaddr) {
         kad_control.bootstrap().await;
     });
 
-    // now preprare CLI and run it
-    let mydata = MyCliData {
-        kad: kad_control,
-        swarm: swarm_control,
-    };
-
-
-    let mut app = App::new("xCLI", mydata)
+    let mut app = App::new("xCLI")
         .version("v0.1")
         .author("kingwel.xie@139.com");
 
-    app.add_subcommand(Command::new("qwert")
-        .about("controls testing features")
-        .usage("qwert")
-        .action(|app, _| -> CmdExeCode {
-            let userdata = app.get_userdata();
-            let mut kad = userdata.kad.clone();
-            async_std::task::block_on(async {
-                let peer = PeerId::random();
-                let r = kad.find_peer(&peer).await;
+    app.register(SWRM, Box::new(swarm_control));
+    app.register(DHT, Box::new(kad_control));
 
-                println!("FindPeer: {:?}", r);
-            });
-
-            println!("qwert tested");
-            CmdExeCode::Ok
-        }));
-    app.add_subcommand(Command::new("swarm")
-        .about("show Swarm information")
-        .usage("swarm")
-        .action(|app, _| -> CmdExeCode {
-            let userdata = app.get_userdata();
-            let mut swarm = userdata.swarm.clone();
-            async_std::task::block_on(async {
-                let r = swarm.retrieve_networkinfo().await;
-                println!("NetworkInfo: {:?}", r);
-
-                println!("Metric: {:?} {:?}", swarm.get_recv_count_and_size(), swarm.get_sent_count_and_size());
-
-                let addresses = swarm.self_addrs().await;
-                println!("Addresses: {:?}", addresses);
-
-                let addresses = swarm.dump_connections().await;
-                println!("Addresses: {:?}", addresses);
-            });
-            CmdExeCode::Ok
-        }));
+    add_swarm_commands(&mut app);
+    add_dht_commands(&mut app);
 
     app.run();
 }

@@ -33,9 +33,10 @@ use libp2prs_kad::Control as KadControl;
 use libp2prs_kad::kad::Kademlia;
 use libp2prs_kad::store::MemoryStore;
 
-
-use libp2prs_cli::*;
+use xcli::*;
 use libp2prs_multiaddr::protocol::Protocol;
+use libp2prs_swarm::cli::{SWRM, add_swarm_commands};
+use libp2prs_kad::cli::{DHT, add_dht_commands};
 
 fn main() {
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -48,8 +49,16 @@ fn main() {
     listen_addr.push(Protocol::Tcp(listen_port));
     let (swarm_control, kad_control) = setup_kad(keys, listen_addr);
 
-    let mut app = Cli::new(swarm_control, kad_control);
-    app.add_commands();
+    let mut app = App::new("xCLI")
+        .version("v0.1")
+        .author("kingwel.xie@139.com");
+
+    app.register(SWRM, Box::new(swarm_control));
+    app.register(DHT, Box::new(kad_control));
+
+    add_swarm_commands(&mut app);
+    add_dht_commands(&mut app);
+
     app.run();
 }
 

@@ -33,6 +33,7 @@ mod addresses;
 mod control;
 mod query;
 mod task_limit;
+pub mod cli;
 
 pub use control::Control;
 
