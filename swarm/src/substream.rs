@@ -252,3 +252,9 @@ pub struct SubstreamView {
     /// The direction of the sub stream.
     pub dir: Direction,
 }
+
+impl fmt::Display for SubstreamView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} Sid({}) {} {}", self.cid, self.id.0, self.dir, self.protocol)
+    }
+}

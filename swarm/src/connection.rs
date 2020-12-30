@@ -50,6 +50,7 @@ use crate::metrics::metric::Metric;
 use crate::ping::PING_PROTOCOL;
 use crate::substream::{ConnectInfo, StreamId, Substream, SubstreamView};
 use crate::{identify, ping, Multiaddr, PeerId, ProtocolId, SwarmError, SwarmEvent};
+use crate::connection::Direction::Outbound;
 
 /// The direction of a peer-to-peer communication channel.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -60,8 +61,20 @@ pub enum Direction {
     Inbound,
 }
 
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", if self == &Outbound {"Out"} else {"In "})
+    }
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnectionId(usize);
+
+impl fmt::Display for ConnectionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:<5}", self.0)
+    }
+}
 
 /// A multiplexed connection to a peer with associated `Substream`s.
 #[allow(dead_code)]
@@ -473,6 +486,13 @@ pub struct ConnectionView {
     pub info: ConnectionInfo,
     /// Handler that processes substreams.
     pub substreams: SmallVec<[SubstreamView; 8]>,
+}
+
+impl fmt::Display for ConnectionView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} RPID({:52}) I/O({}{}) RA({})", self.id, self.dir,
+               self.info.remote_peer_id, self.info.num_inbound_streams, self.info.num_outbound_streams, self.info.ra)
+    }
 }
 
 async fn open_stream_internal(

@@ -545,8 +545,8 @@ impl Swarm {
             }
             SwarmControlCmd::Dump(cmd) => {
                 match cmd {
-                    DumpCommand::Connections(reply) => {
-                        let _ = self.on_retrieve_connection_views(|r| {
+                    DumpCommand::Connections(peer_id, reply) => {
+                        let _ = self.on_retrieve_connection_views(peer_id, |r| {
                             let _ = reply.send(r);
                         });
                     }
@@ -653,8 +653,8 @@ impl Swarm {
         Ok(())
     }
     /// Retrieves the connection views.
-    fn on_retrieve_connection_views(&mut self, f: impl FnOnce(Result<Vec<ConnectionView>>)) -> Result<()> {
-        f(Ok(self.get_connection_views()));
+    fn on_retrieve_connection_views(&mut self, pid: Option<PeerId>, f: impl FnOnce(Result<Vec<ConnectionView>>)) -> Result<()> {
+        f(Ok(self.get_connection_views(pid)));
         Ok(())
     }
     /// Retrieves the substream views.
@@ -670,8 +670,11 @@ impl Swarm {
         task::spawn(async move { while let Ok(()) = swarm.next().await {} });
     }
 
-    fn get_connection_views(&self) -> Vec<ConnectionView> {
-        self.connections_by_id.iter().map(|(_,c)|c.to_view()).collect()
+    fn get_connection_views(&self, peer_id: Option<PeerId>) -> Vec<ConnectionView> {
+        self.connections_by_id.values()
+            .filter(|c|peer_id.as_ref().map_or(true, |pid| pid == &c.remote_peer()))
+            .map(|c|c.to_view())
+            .collect()
     }
     fn get_substream_views(&self, peer_id: PeerId) -> Result<Vec<SubstreamView>> {
         let r = self.connections_by_peer.get(&peer_id);

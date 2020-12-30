@@ -71,8 +71,9 @@ pub enum SwarmControlCmd {
 /// The dump commands can be used to dump internal data of Swarm.
 #[derive(Debug)]
 pub enum DumpCommand {
-    /// Dump all active connections.
-    Connections(oneshot::Sender<Result<Vec<ConnectionView>>>),
+    /// Dump the active connections belonged to some remote peer.
+    /// None means dumping all active connections.
+    Connections(Option<PeerId>, oneshot::Sender<Result<Vec<ConnectionView>>>),
     /// Dump all substreams of a connection.
     Streams(PeerId, oneshot::Sender<Result<Vec<SubstreamView>>>),
 }
@@ -187,9 +188,9 @@ impl Control {
         rx.await?
     }
 
-    pub async fn dump_connections(&mut self) -> Result<Vec<ConnectionView>> {
+    pub async fn dump_connections(&mut self, peer_id: Option<PeerId>) -> Result<Vec<ConnectionView>> {
         let (tx, rx) = oneshot::channel();
-        self.sender.send(SwarmControlCmd::Dump(DumpCommand::Connections(tx))).await?;
+        self.sender.send(SwarmControlCmd::Dump(DumpCommand::Connections(peer_id, tx))).await?;
         rx.await?
     }
 
