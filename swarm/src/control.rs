@@ -103,6 +103,11 @@ impl Control {
         }
     }
 
+    /// Get all peers in the AddrBook of Peerstore.
+    pub fn get_all_peers(&self) -> Vec<PeerId> {
+        self.peer_store.get_all_peers()
+    }
+
     /// Get recv package count&bytes
     pub fn get_recv_count_and_size(&self) -> (usize, usize) {
         self.metric.get_recv_count_and_size()
@@ -181,10 +186,17 @@ impl Control {
         rx.await?
     }
 
-    /// Retrieve network statistics from Swarm.
+    /// Retrieve network information from Swarm.
     pub async fn retrieve_networkinfo(&mut self) -> Result<NetworkInfo> {
         let (tx, rx) = oneshot::channel();
         self.sender.send(SwarmControlCmd::NetworkInfo(tx)).await?;
+        rx.await?
+    }
+
+    /// Retrieve identify information from Swarm.
+    pub async fn retrieve_identify_info(&mut self) -> Result<IdentifyInfo> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(SwarmControlCmd::IdentifyInfo(tx)).await?;
         rx.await?
     }
 

@@ -29,13 +29,12 @@ use libp2prs_core::{Multiaddr, PeerId};
 use libp2prs_mplex as mplex;
 use libp2prs_secio as secio;
 use libp2prs_swarm::identify::IdentifyConfig;
-use libp2prs_swarm::{Swarm, Control as SwarmControl};
+use libp2prs_swarm::Swarm;
 use libp2prs_tcp::TcpConfig;
 //use libp2prs_traits::{ReadEx, WriteEx};
 use libp2prs_kad::kad::Kademlia;
 use libp2prs_kad::store::MemoryStore;
 use libp2prs_yamux as yamux;
-use libp2prs_kad::Control as KadControl;
 
 use xcli::*;
 use std::convert::TryFrom;

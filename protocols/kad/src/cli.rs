@@ -75,8 +75,8 @@ pub(crate) fn add_node(app: &App, actions: &[&str]) -> XcliResult {
     let pid = actions.get(0).cloned().ok_or(XcliError::BadSyntax)?;
     let addr = actions.get(1).cloned().ok_or(XcliError::BadSyntax)?;
 
-    let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(Some(e.into())))?;
-    let address = Multiaddr::from_str(addr).map_err(|e| XcliError::BadArgument(Some(e.into())))?;
+    let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(e.to_string()))?;
+    let address = Multiaddr::from_str(addr).map_err(|e| XcliError::BadArgument(e.to_string()))?;
 
     task::block_on(async {
         kad.add_node(peer, vec![address]).await;
@@ -97,7 +97,7 @@ pub(crate) fn rm_node(app: &App, actions: &[&str]) -> XcliResult {
     };
 
     let pid = actions.get(0).cloned().ok_or(XcliError::BadSyntax)?;
-    let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(Some(e.into())))?;
+    let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(e.to_string()))?;
 
     task::block_on(async {
         kad.remove_node(peer).await;
@@ -160,7 +160,7 @@ pub(crate) fn find_peer(app: &App, actions: &[&str]) -> XcliResult {
     };
 
     let pid = actions.get(0).cloned().ok_or(XcliError::BadSyntax)?;
-    let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(Some(e.into())))?;
+    let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(e.to_string()))?;
 
     task::block_on(async {
         let r = kad.find_peer(&peer).await;
