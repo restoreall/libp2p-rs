@@ -30,8 +30,19 @@ pub(crate) fn get_network_info(app: &App, _actions: &[&str]) -> XcliResult {
         let addresses = swarm.self_addrs().await;
         println!("Addresses: {:?}", addresses);
 
-        let addresses = swarm.dump_connections().await;
-        println!("Addresses: {:?}", addresses);
+        let connections = swarm.dump_connections(None).await.unwrap();
+        println!("CID   DIR Remote-Peer-Id                                       I/O  Remote-Multiaddr");
+        connections
+            .iter()
+            .for_each(|v| {
+                println!("{} {} {:52} {}/{}  {}", v.id, v.dir, v.info.remote_peer_id,
+                         v.info.num_inbound_streams, v.info.num_outbound_streams, v.info.ra);
+                if true {
+                    v.substreams.iter().for_each(|s| {
+                        println!("      ({})", s);
+                    });
+                }
+            });
     });
 
     Ok(CmdExeCode::Ok)
