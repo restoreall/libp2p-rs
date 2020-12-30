@@ -18,11 +18,10 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use async_std::task;
 use libp2prs_core::identity::Keypair;
 use libp2prs_core::transport::upgrade::TransportUpgrade;
 use libp2prs_core::upgrade::Selector;
-use libp2prs_core::{Multiaddr, PeerId};
+use libp2prs_core::Multiaddr;
 use libp2prs_mplex as mplex;
 use libp2prs_secio as secio;
 use libp2prs_swarm::Control as SwarmControl;
@@ -33,16 +32,10 @@ use libp2prs_yamux as yamux;
 use libp2prs_kad::Control as KadControl;
 use libp2prs_kad::kad::Kademlia;
 use libp2prs_kad::store::MemoryStore;
-use std::str::FromStr;
 
 
-use xcli::*;
+use libp2prs_cli::*;
 use libp2prs_multiaddr::protocol::Protocol;
-
-struct MyCliData {
-    kad: KadControl,
-    swarm: SwarmControl,
-}
 
 fn main() {
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -55,186 +48,143 @@ fn main() {
     listen_addr.push(Protocol::Tcp(listen_port));
     let (swarm_control, kad_control) = setup_kad(keys, listen_addr);
 
-    // now preprare CLI and run it
-    let mydata = MyCliData {
-        swarm: swarm_control,
-        kad: kad_control,
-    };
-
-    let mut app = App::new("xCLI", mydata)
-        .version("v0.1")
-        .author("kingwel.xie@139.com");
-
-    // DHT
-    let bootstrap_cmd = Command::new("bootstrap")
-        .about("Show or edit the list of bootstrap peers")
-        .usage("bootstrap")
-        .action(bootstrap);
-    let add_node_cmd = Command::new("add")
-        .about("Add peer to KBucket")
-        .usage("add [<peer>] [<multi_address>]")
-        .action(add_node);
-    let rm_node_cmd = Command::new("rm")
-        .about("Remove peer from KBucket")
-        .usage("rm [<peer>] [<multi_address>]")
-        .action(rm_node);
-    let list_node_cmd = Command::new("list")
-        .about("List all node from KBucket")
-        .usage("list")
-        .action(list_all_node);
-    let find_peer_cmd = Command::new("findpeer")
-        .about("find peer through dht")
-        .usage("findpeer <peerid>")
-        .action(find_peer);
-    let get_value_cmd = Command::new("getvalue")
-        .about("get value through dht")
-        .usage("getvalue <key>")
-        .action(get_value);
-
-    let dht_cmd = Command::new("dht")
-        .about("find peer or record through dht")
-        .usage("dht")
-        .subcommand(bootstrap_cmd)
-        .subcommand(add_node_cmd)
-        .subcommand(rm_node_cmd)
-        .subcommand(list_node_cmd)
-        .subcommand(find_peer_cmd)
-        .subcommand(get_value_cmd);
-    app.add_subcommand(dht_cmd);
-
-    app.add_subcommand(Command::new("swarm")
-        .about("show Swarm information")
-        .usage("swarm")
-        .action(get_network_info));
-
+    let mut app = Cli::new(swarm_control, kad_control);
+    app.add_commands();
     app.run();
 }
 
-fn bootstrap(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
-    let userdata = app.get_userdata();
-    let mut kad = userdata.kad.clone();
-    task::block_on(async {
-        kad.bootstrap().await;
-        println!("add node completed");
-    });
-
-    CmdExeCode::Ok
-}
-
-fn add_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
-    let pid = match actions.get(0).cloned() {
-        Some(p) => p,
-        None => return CmdExeCode::BadSyntax
-    };
-
-    let addr = match actions.get(1).cloned() {
-        Some(a) => a,
-        None => return CmdExeCode::BadSyntax
-    };
-
-    let peer = match PeerId::from_str(pid) {
-        Ok(p) => p,
-        Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
-    };
-
-    let address = match Multiaddr::from_str(addr) {
-        Ok(a) => a,
-        Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid multi address")))
-    };
-
-    let userdata = app.get_userdata();
-    let mut kad = userdata.kad.clone();
-    task::block_on(async {
-        kad.add_node(peer, vec![address]).await;
-        println!("add node completed");
-    });
-
-    CmdExeCode::Ok
-}
-
-fn rm_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
-    let pid = match actions.get(0).cloned() {
-        Some(p) => p,
-        None => return CmdExeCode::BadSyntax
-    };
-
-    let peer = match PeerId::from_str(pid) {
-        Ok(p) => p,
-        Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
-    };
-
-    let userdata = app.get_userdata();
-    let mut kad = userdata.kad.clone();
-    task::block_on(async {
-        kad.remove_node(peer).await;
-        println!("remove node completed");
-    });
-
-    CmdExeCode::Ok
-}
-
-fn list_all_node(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
-    let userdata = app.get_userdata();
-    let mut kad = userdata.kad.clone();
-    task::block_on(async {
-        let peers = kad.list_all_node().await;
-        println!("nodes:");
-        for p in peers {
-            println!("{:?}", p);
-        }
-        // can't work, why???
-        // peers.iter().cloned().map(|p| println!("nodes: {:?}", p));
-    });
-
-    CmdExeCode::Ok
-}
-
-fn get_value(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
-    let key = match actions.get(0).cloned() {
-        Some(k) => k,
-        None => return CmdExeCode::BadSyntax
-    };
-    let userdata = app.get_userdata();
-    let mut kad = userdata.kad.clone();
-    task::block_on(async {
-        let value = kad.get_value(Vec::from(key)).await;
-        println!("get value: {:?}", value);
-    });
-
-    CmdExeCode::Ok
-}
-
-fn find_peer(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
-    let pid = match actions.get(0).cloned() {
-        Some(p) => p,
-        None => return CmdExeCode::BadSyntax
-    };
-    let peer = match PeerId::from_str(pid) {
-        Ok(p) => p,
-        Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
-    };
-    let userdata = app.get_userdata();
-    let mut kad = userdata.kad.clone();
-    task::block_on(async {
-        let r = kad.find_peer(&peer).await;
-        println!("FindPeer: {:?}", r);
-    });
-
-    CmdExeCode::Ok
-}
-
-fn get_network_info(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
-    let userdata = app.get_userdata();
-    let mut swarm = userdata.swarm.clone();
-    task::block_on(async {
-        let r = swarm.retrieve_networkinfo().await;
-        println!("NetworkInfo: {:?}", r);
-        println!("Metric: {:?} {:?}", swarm.get_recv_count_and_size(), swarm.get_sent_count_and_size());
-        let addresses = swarm.self_addrs().await;
-        println!("Addresses: {:?}", addresses);
-    });
-    CmdExeCode::Ok
-}
+// const NO_DHT: &str = "dht is not supported";
+//
+// fn dht(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
+//     let userdata = app.get_userdata();
+//     userdata.kad.clone().map_or(CmdExeCode::BadArgument(Some(NO_DHT.to_string())), |_c| CmdExeCode::Ok)
+// }
+//
+// fn bootstrap(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
+//     let userdata = app.get_userdata();
+//     let mut kad = userdata.kad.clone().expect("kad control");
+//     task::block_on(async {
+//         kad.bootstrap().await;
+//         println!("add node completed");
+//     });
+//
+//     CmdExeCode::Ok
+// }
+//
+// fn add_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
+//     let pid = match actions.get(0).cloned() {
+//         Some(p) => p,
+//         None => return CmdExeCode::BadSyntax
+//     };
+//
+//     let addr = match actions.get(1).cloned() {
+//         Some(a) => a,
+//         None => return CmdExeCode::BadSyntax
+//     };
+//
+//     let peer = match PeerId::from_str(pid) {
+//         Ok(p) => p,
+//         Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
+//     };
+//
+//     let address = match Multiaddr::from_str(addr) {
+//         Ok(a) => a,
+//         Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid multi address")))
+//     };
+//
+//     let userdata = app.get_userdata();
+//     let mut kad = userdata.kad.clone().expect("kad control");;
+//     task::block_on(async {
+//         kad.add_node(peer, vec![address]).await;
+//         println!("add node completed");
+//     });
+//
+//     CmdExeCode::Ok
+// }
+//
+// fn rm_node(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
+//     let pid = match actions.get(0).cloned() {
+//         Some(p) => p,
+//         None => return CmdExeCode::BadSyntax
+//     };
+//
+//     let peer = match PeerId::from_str(pid) {
+//         Ok(p) => p,
+//         Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
+//     };
+//
+//     let userdata = app.get_userdata();
+//     let mut kad = userdata.kad.clone().expect("kad control");;
+//     task::block_on(async {
+//         kad.remove_node(peer).await;
+//         println!("remove node completed");
+//     });
+//
+//     CmdExeCode::Ok
+// }
+//
+// fn list_all_node(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
+//     let userdata = app.get_userdata();
+//     let mut kad = userdata.kad.clone().expect("kad control");;
+//     task::block_on(async {
+//         let peers = kad.list_all_node().await;
+//         println!("nodes:");
+//         for p in peers {
+//             println!("{:?}", p);
+//         }
+//         // can't work, why???
+//         // peers.iter().cloned().map(|p| println!("nodes: {:?}", p));
+//     });
+//
+//     CmdExeCode::Ok
+// }
+//
+// fn get_value(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
+//     let key = match actions.get(0).cloned() {
+//         Some(k) => k,
+//         None => return CmdExeCode::BadSyntax
+//     };
+//     let userdata = app.get_userdata();
+//     let mut kad = userdata.kad.clone().expect("kad control");;
+//     task::block_on(async {
+//         let value = kad.get_value(Vec::from(key)).await;
+//         println!("get value: {:?}", value);
+//     });
+//
+//     CmdExeCode::Ok
+// }
+//
+// fn find_peer(app: &App<MyCliData>, actions: &Vec<&str>) -> CmdExeCode {
+//     let pid = match actions.get(0).cloned() {
+//         Some(p) => p,
+//         None => return CmdExeCode::BadSyntax
+//     };
+//     let peer = match PeerId::from_str(pid) {
+//         Ok(p) => p,
+//         Err(_) => return CmdExeCode::BadArgument(Some(String::from("invalid peer id")))
+//     };
+//     let userdata = app.get_userdata();
+//     let mut kad = userdata.kad.clone().expect("kad control");;
+//     task::block_on(async {
+//         let r = kad.find_peer(&peer).await;
+//         println!("FindPeer: {:?}", r);
+//     });
+//
+//     CmdExeCode::Ok
+// }
+//
+// fn get_network_info(app: &App<MyCliData>, _actions: &Vec<&str>) -> CmdExeCode {
+//     let userdata = app.get_userdata();
+//     let mut swarm = userdata.swarm.clone();
+//     task::block_on(async {
+//         let r = swarm.retrieve_networkinfo().await;
+//         println!("NetworkInfo: {:?}", r);
+//         println!("Metric: {:?} {:?}", swarm.get_recv_count_and_size(), swarm.get_sent_count_and_size());
+//         let addresses = swarm.retrieve_all_addrs().await;
+//         println!("Addresses: {:?}", addresses);
+//     });
+//     CmdExeCode::Ok
+// }
 
 fn setup_kad(keys: Keypair, listen_addr: Multiaddr) -> (SwarmControl, KadControl) {
     let sec = secio::Config::new(keys.clone());
