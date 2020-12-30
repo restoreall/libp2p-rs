@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate lazy_static;
-
 mod dht;
 mod swrm;
 
@@ -20,8 +17,8 @@ impl Cli {
             .version("v0.1")
             .author("kingwel.xie@139.com");
 
-        app.register(String::from(SWRM), Box::new(swarm));
-        app.register(String::from(DHT), Box::new(kad));
+        app.register(SWRM, Box::new(swarm));
+        app.register(DHT, Box::new(kad));
 
         Cli {app}
     }
@@ -67,7 +64,6 @@ impl Cli {
         let dht_cmd = Command::new("dht")
             .about("find peer or record through dht")
             .usage("dht")
-            .action(dht::dht)
             // .subcommand(bootstrap_cmd)
             .subcommand(add_node_cmd);
             // .subcommand(rm_node_cmd)

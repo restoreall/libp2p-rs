@@ -6,15 +6,7 @@ use std::str::FromStr;
 
 pub const DHT: &str = "dht";
 
-fn no_dht() -> anyhow::Error {
-    anyhow::Error::msg("NO DHT".to_string())
-}
-
-pub(crate) fn dht(app: &App, _actions: &Vec<&str>) -> XcliResult {
-    app.get_handler(DHT).clone().map_or( Err(XcliError::BadArgument(Some(no_dht())).into()), |_| Ok(CmdExeCode::Ok))
-}
-
-// pub(crate) fn bootstrap(app: &App, _actions: &Vec<&str>) -> Xresult {
+// pub(crate) fn bootstrap(app: &App, _actions: &[&str]) -> XcliResult {
 //     let mut value_any = app.get_handler(DHT).clone().expect("get kad controller failed");
 //     let mut kad = match value_any.downcast_ref::<Control>() {
 //         Some(ctrl) => ctrl.clone(),
@@ -32,40 +24,22 @@ pub(crate) fn dht(app: &App, _actions: &Vec<&str>) -> XcliResult {
 //     CmdExeCode::Ok
 // }
 //
-pub(crate) fn add_node(app: &App, actions: &Vec<&str>) -> XcliResult {
-    let mut value_any = match app.get_handler(DHT).clone() {
-        Some(v) => v,
-        None => return Err(XcliError::BadArgument(Some(no_dht())).into())
-    };
+pub(crate) fn add_node(app: &App, actions: &[&str]) -> XcliResult {
+    let value_any = app.get_handler(DHT)?;
 
-    // let mut value_any = app.get_handler(DHT).clone().expect("get kad controller failed");
     let mut kad = match value_any.downcast_ref::<Control>() {
         Some(ctrl) => ctrl.clone(),
         None => {
             println!("downcast failed");
-            return Err(XcliError::BadSyntax.into())
+            return Err(XcliError::BadSyntax)
         }
     };
 
-    let pid = match actions.get(0).cloned() {
-        Some(p) => p,
-        None => return Err(XcliError::BadSyntax.into())
-    };
+    let pid = actions.get(0).cloned().ok_or(XcliError::BadSyntax)?;
+    let addr = actions.get(1).cloned().ok_or(XcliError::BadSyntax)?;
 
-    let addr = match actions.get(1).cloned() {
-        Some(a) => a,
-        None => return Err(XcliError::BadSyntax.into())
-    };
-
-    let peer = match PeerId::from_str(pid) {
-        Ok(p) => p,
-        Err(e) => return Err(XcliError::BadArgument(Some(e.into())).into())
-    };
-
-    let address = match Multiaddr::from_str(addr) {
-        Ok(a) => a,
-        Err(e) => return Err(XcliError::BadArgument(Some(e.into())).into())
-    };
+    let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(Some(e.into())))?;
+    let address = Multiaddr::from_str(addr).map_err(|e| XcliError::BadArgument(Some(e.into())))?;
 
     task::block_on(async {
         kad.add_node(peer, vec![address]).await;
@@ -75,7 +49,7 @@ pub(crate) fn add_node(app: &App, actions: &Vec<&str>) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 //
-// pub(crate) fn rm_node(app: &App, actions: &Vec<&str>) -> CmdExeCode {
+// pub(crate) fn rm_node(app: &App, actions: &[&str]) -> CmdExeCode {
 //     let mut value_any = app.get_handler(DHT).clone().expect("get kad controller failed");
 //     let mut kad = match value_any.downcast_ref::<Control>() {
 //         Some(ctrl) => ctrl.clone(),
@@ -103,7 +77,7 @@ pub(crate) fn add_node(app: &App, actions: &Vec<&str>) -> XcliResult {
 //     CmdExeCode::Ok
 // }
 //
-// pub(crate) fn list_all_node(app: &App, _actions: &Vec<&str>) -> CmdExeCode {
+// pub(crate) fn list_all_node(app: &App, _actions: &[&str]) -> CmdExeCode {
 //     let mut value_any = app.get_handler(DHT).clone().expect("get kad controller failed");
 //     let mut kad = match value_any.downcast_ref::<Control>() {
 //         Some(ctrl) => ctrl.clone(),
@@ -126,7 +100,7 @@ pub(crate) fn add_node(app: &App, actions: &Vec<&str>) -> XcliResult {
 //     CmdExeCode::Ok
 // }
 //
-// pub(crate) fn get_value(app: &App, actions: &Vec<&str>) -> CmdExeCode {
+// pub(crate) fn get_value(app: &App, actions: &[&str]) -> CmdExeCode {
 //     let mut value_any = app.get_handler(DHT).clone().expect("get kad controller failed");
 //     let mut kad = match value_any.downcast_ref::<Control>() {
 //         Some(ctrl) => ctrl.clone(),
@@ -148,7 +122,7 @@ pub(crate) fn add_node(app: &App, actions: &Vec<&str>) -> XcliResult {
 //     CmdExeCode::Ok
 // }
 //
-// pub(crate) fn find_peer(app: &App, actions: &Vec<&str>) -> CmdExeCode {
+// pub(crate) fn find_peer(app: &App, actions: &[&str]) -> CmdExeCode {
 //     let mut value_any = app.get_handler(DHT).clone().expect("get kad controller failed");
 //     let mut kad = match value_any.downcast_ref::<Control>() {
 //         Some(ctrl) => ctrl.clone(),

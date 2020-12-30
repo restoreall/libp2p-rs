@@ -82,7 +82,7 @@ members = [
   "transports/websocket",
   "multiaddr",
   "swarm",
-  "xcli"
+  "cli",
 ]
 
 [[example]]
