@@ -516,17 +516,18 @@ where
     ///        with the new peer.
     ///    2.2 if there is no such peer exists in that bucket, do nothing -> ignore adding peer
     fn try_add_peer(&mut self, peer: PeerId, queried: bool) {
-        log::debug!("trying to add a peer to routing table: {:?}, query={}", peer, queried);
-
         let timeout = self.check_kad_peer_interval;
         let now = Instant::now();
         let key = kbucket::Key::new(peer.clone());
+
+        log::debug!("trying to add a peer to routing table: {:?} {:?}, query={}", peer, self.kbuckets.bucket_index(&key), queried);
+
         match self.kbuckets.entry(&key) {
             kbucket::Entry::Present(mut entry) => {
                 // already in RT, update the node's aliveness if queried is true
                 if queried {
                     entry.value().set_aliveness(Instant::now());
-                    log::debug!("Peer updated: {:?}", entry.value());
+                    log::debug!("{:?} updated: {:?}", peer, entry.value());
                 }
             }
             kbucket::Entry::Absent(mut entry) => {
@@ -547,11 +548,11 @@ where
                     if let Some(candidate) = candidate {
                         let key = candidate.key.clone();
                         let evicted = bucket.remove(&key);
-                        log::debug!("Bucket full. Peer added to routing table: {} to replace {:?}", peer, evicted);
+                        log::debug!("Bucket full. Peer node added, {} replacing {:?}", peer, evicted);
                         // now try to insert the value again
                         let _ = entry.insert(info);
                     } else {
-                        log::debug!("Bucket full, and can't find an replaced node, give up {}", peer);
+                        log::debug!("Bucket full, but can't find an replaced node, give up {}", peer);
                     }
                 }
             }
@@ -564,8 +565,10 @@ where
     /// Returns `None` if the peer was not in the routing table,
     /// not even pending insertion.
     fn try_remove_peer(&mut self, peer: PeerId) -> Option<kbucket::EntryView<kbucket::Key<PeerId>, PeerInfo>> {
-        log::debug!("trying to remove a peer from routing table: {:?}", peer);
-        let key = kbucket::Key::new(peer);
+        let key = kbucket::Key::new(peer.clone());
+
+        log::debug!("trying to remove a peer from routing table: {:?} {:?}", peer, self.kbuckets.bucket_index(&key));
+
         match self.kbuckets.entry(&key) {
             kbucket::Entry::Present(entry) => Some(entry.remove()),
             kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => None,
@@ -596,7 +599,10 @@ where
     fn prepare_iterative_query(&mut self, qt: QueryType, key: record::Key) -> IterativeQuery {
         let local_id = self.kbuckets.self_key().preimage().clone();
         let target = kbucket::Key::new(key.clone());
-        let seeds = self.kbuckets.closest_keys(&target).into_iter().collect();
+        let seeds = self.kbuckets.closest_keys(&target)
+            .into_iter()
+            .take(self.query_config.replication_factor.get())
+            .collect();
 
         let query = IterativeQuery::new(
             qt,
@@ -1416,6 +1422,13 @@ where
             }
             RefreshStage::SelfQueryDone => {
                 log::debug!("bootstrap: self-query done, proceeding with random walk...");
+                log::debug!("kbuckets entries={}", self.kbuckets.num_entries());
+
+                // self.kbuckets.iter().for_each(|k|{
+                //     if k.num_entries() > 0 {
+                //         println!("{:?} : {}", k.index(), k.num_entries());
+                //     }
+                // });
 
                 // always mark bootstrapped as true if we step into this stage
                 self.bootstrapped = true;
@@ -1428,6 +1441,7 @@ where
                 let peers = self.kbuckets.iter()
                     .skip_while(|b| b.is_empty())
                     .skip(1) // Skip the bucket with the closest neighbour.
+                    .take(16)
                     .map(|b| {
                         // Try to find a key that falls into the bucket. While such keys can
                         // be generated fully deterministically, the current libp2p kademlia
@@ -1467,7 +1481,13 @@ where
                 });
             }
             RefreshStage::Completed => {
+                log::debug!("kbuckets entries={}", self.kbuckets.num_entries());
                 log::info!("bootstrap: finished, start the refresh timer");
+                // self.kbuckets.iter().for_each(|k|{
+                //     if k.num_entries() > 0 {
+                //         println!("{:?} : {}", k.index(), k.num_entries());
+                //     }
+                // });
                 self.start_refresh_timer();
             }
         }

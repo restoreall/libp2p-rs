@@ -90,7 +90,7 @@ pub struct KBucketsTable<TKey, TVal> {
 /// A (type-safe) index into a `KBucketsTable`, i.e. a non-negative integer in the
 /// interval `[0, NUM_BUCKETS)`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct BucketIndex(usize);
+pub struct BucketIndex(usize);
 
 impl BucketIndex {
     /// Creates a new `BucketIndex` for a `Distance`.
@@ -155,6 +155,10 @@ where
         &self.local_key
     }
 
+    /// Returns number of entries in the routing table.
+    pub fn num_entries<'a>(&'a mut self) -> usize {
+        self.iter().fold(0, |acc, x| acc + x.num_entries())
+    }
     /// Returns an `Entry` for the given key, representing the state of the entry
     /// in the routing table.
     pub fn entry<'a>(&'a mut self, key: &'a TKey) -> Entry<'a, TKey, TVal> {
@@ -176,6 +180,17 @@ where
             index: BucketIndex(i),
             bucket: b,
         })
+    }
+
+    /// Returns the bucket index for the disctance to the given key.
+    ///
+    /// Returns `None` if the given key refers to the local key.
+    pub fn bucket_index<K>(&self, key: &K) -> Option<BucketIndex>
+    where
+        K: AsRef<KeyBytes>,
+    {
+        let d = self.local_key.as_ref().distance(key);
+        BucketIndex::new(&d)
     }
 
     /// Returns the bucket for the distance to the given key.
@@ -404,6 +419,11 @@ where
     TKey: Clone + AsRef<KeyBytes>,
     TVal: Clone,
 {
+    /// Returns the index for this bucket.
+    pub fn index(&self) -> usize {
+        self.index.get()
+    }
+
     /// Returns the minimum inclusive and maximum inclusive [`Distance`] for
     /// this bucket.
     pub fn range(&self) -> (Distance, Distance) {

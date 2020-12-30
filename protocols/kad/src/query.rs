@@ -265,7 +265,6 @@ pub(crate) enum QueryUpdate {
         duration: Duration,
     },
     Unreachable(PeerId),
-    //Timeout,
 }
 
 /// A record either received by the given peer or retrieved from the local
@@ -590,7 +589,7 @@ impl IterativeQuery {
             }
             QueryUpdate::Unreachable(peer) => {
                 // set to PeerState::Unreachable
-                log::info!("unreachable peer {:?} detected", peer);
+                log::debug!("unreachable peer {:?} detected", peer);
                 closest_peers.set_peer_state(&peer, PeerState::Unreachable);
                 // signal for dead peer detected
                 let _ = me.poster.post(ProtocolEvent::KadPeerStopped(peer)).await;
@@ -716,7 +715,7 @@ impl IterativeQuery {
                     let mut tx = tx.clone();
                     let _ = task::spawn(async move {
                         let r = job.execute().await;
-                        if r.is_err() {
+                        if let Err(_) = r {
                             let _ = tx.send(QueryUpdate::Unreachable(peer_id)).await;
                         }
                     });
@@ -730,7 +729,12 @@ impl IterativeQuery {
                 .map(|p| p.peer.clone())
                 .collect::<Vec<_>>();
 
-            log::debug!("iterative query, found {} closer peers", peers.len());
+            log::debug!("iterative query, return {} closer peers", peers.len());
+            log::debug!("Closest Peers in details: Unreachable:{} NotContacted:{} Waiting:{} Succeeded:{}",
+                closest_peers.num_of_state(PeerState::Unreachable),
+                closest_peers.num_of_state(PeerState::NotContacted),
+                closest_peers.num_of_state(PeerState::Waiting),
+                closest_peers.num_of_state(PeerState::Succeeded));
 
             if !peers.is_empty() {
                 query_results.closest_peers = Some(peers);
