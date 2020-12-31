@@ -22,7 +22,7 @@ use futures::channel::{mpsc, oneshot};
 use futures::SinkExt;
 use libp2prs_core::{Multiaddr, PeerId};
 
-use crate::protocol::KadPeer;
+use crate::protocol::{KadPeer, KadMessengerView};
 use crate::query::PeerRecord;
 use crate::{record, KadError};
 use crate::kad::KBucketView;
@@ -36,8 +36,6 @@ pub(crate) enum ControlCommand {
     AddNode(PeerId, Vec<Multiaddr>, oneshot::Sender<()>),
     /// Removes a peer from Kad KBuckets, also removes it from Peerstore.
     RemoveNode(PeerId),
-    /// List all peer nodes in KBuckets.
-    ListAllNode(oneshot::Sender<Vec<KadPeer>>),
     /// Lookups the closer peers with given ID, returns a list of peer Id.
     Lookup(record::Key, oneshot::Sender<Result<Vec<KadPeer>>>),
     /// Searches for a peer with given ID, returns a list of peer info
@@ -62,6 +60,8 @@ pub(crate) enum ControlCommand {
 pub enum DumpCommand {
     /// Dump the Kad DHT kbuckets. Empty kbucket will be ignored.
     Entries(oneshot::Sender<Vec<KBucketView>>),
+    /// Dump the Kad Messengers.
+    Messengers(oneshot::Sender<Vec<KadMessengerView>>),
 }
 
 #[derive(Clone)]
@@ -93,15 +93,6 @@ impl Control {
             .expect("control send remove_node");
     }
 
-    pub async fn list_all_node(&mut self) -> Vec<KadPeer> {
-        let (tx, rx) = oneshot::channel();
-        self.control_sender
-            .send(ControlCommand::ListAllNode(tx))
-            .await
-            .expect("control send list_all_node");
-        rx.await.expect("list all node reply failed")
-    }
-
     pub async fn dump_kbuckets(&mut self) -> Vec<KBucketView> {
         let (tx, rx) = oneshot::channel();
         self.control_sender
@@ -109,6 +100,15 @@ impl Control {
             .await
             .expect("control send dump::entries");
         rx.await.expect("dump::entries failed")
+    }
+
+    pub async fn dump_messengers(&mut self) -> Vec<KadMessengerView> {
+        let (tx, rx) = oneshot::channel();
+        self.control_sender
+            .send(ControlCommand::Dump(DumpCommand::Messengers(tx)))
+            .await
+            .expect("control send dump::messengers");
+        rx.await.expect("dump::messengers failed")
     }
 
     /// Initiate bootstrapping.

@@ -24,12 +24,14 @@ use std::time::Instant;
 #[derive(Clone, Debug)]
 pub struct PeerInfo {
     /// The time instant at which we talk to the remote peer.
+    /// Sets to `Some` if it is deemed to be alive. Otherwise,
+    /// it is set to `None`
     aliveness: Option<Instant>,
 
     /// The time this peer was added to the routing table.
     added_at: Instant,
 
-    /// If a bucket is full, this peer can be replaced to make space for a new peer.
+    /// reserved for future use?
     replaceable: bool,
 }
 
@@ -42,12 +44,8 @@ impl PeerInfo {
         }
     }
 
-    pub(crate) fn is_replaceable(&self) -> bool {
-        self.replaceable
-    }
-
-    pub(crate) fn set_aliveness(&mut self, aliveness: Instant) {
-        self.aliveness = Some(aliveness);
+    pub(crate) fn set_aliveness(&mut self, aliveness: Option<Instant>) {
+        self.aliveness = aliveness;
     }
 
     pub(crate) fn get_aliveness(&self) -> Option<Instant> {

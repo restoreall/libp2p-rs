@@ -19,10 +19,7 @@ pub fn add_dht_commands(app: &mut App) {
         .about("Remove peer from KBucket")
         .usage("rm [<peer>] [<multi_address>]")
         .action(rm_node);
-    let list_node_cmd = Command::new("list")
-        .about("List all node from KBucket")
-        .usage("list")
-        .action(list_all_node);
+
     let find_peer_cmd = Command::new("findpeer")
         .about("find peer through dht")
         .usage("findpeer <peerid>")
@@ -32,10 +29,14 @@ pub fn add_dht_commands(app: &mut App) {
         .usage("getvalue <key>")
         .action(get_value);
 
-    let dump_dht_cmd = Command::new("dump")
+    let dump_messenger_cmd = Command::new("dump")
         .about("Dump KBuckets")
         .usage("dump")
         .action(cli_dump_kbuckets);
+    let dump_dht_cmd = Command::new("messenger")
+        .about("Dump Messengers")
+        .usage("messengers")
+        .action(cli_dump_messengers);
 
     let dht_cmd = Command::new("dht")
         .about("find peer or record through dht")
@@ -43,8 +44,8 @@ pub fn add_dht_commands(app: &mut App) {
         .subcommand(bootstrap_cmd)
         .subcommand(add_node_cmd)
         .subcommand(rm_node_cmd)
-        .subcommand(list_node_cmd)
         .subcommand(dump_dht_cmd)
+        .subcommand(dump_messenger_cmd)
         .subcommand(find_peer_cmd)
         .subcommand(get_value_cmd);
     app.add_subcommand(dht_cmd);
@@ -105,22 +106,6 @@ pub(crate) fn rm_node(app: &App, args: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn list_all_node(app: &App, _args: &[&str]) -> XcliResult {
-    let mut kad = handler(app);
-
-    task::block_on(async {
-        let peers = kad.list_all_node().await;
-        println!("nodes:");
-        for p in peers {
-            println!("{:?}", p);
-        }
-        // can't work, why???
-        // peers.iter().cloned().map(|p| println!("nodes: {:?}", p));
-    });
-
-    Ok(CmdExeCode::Ok)
-}
-
 pub(crate) fn cli_dump_kbuckets(app: &App, args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
 
@@ -128,9 +113,10 @@ pub(crate) fn cli_dump_kbuckets(app: &App, args: &[&str]) -> XcliResult {
 
     task::block_on(async {
         let buckets = kad.dump_kbuckets().await;
-        println!("Index Entries");
+        println!("Index Entries Active");
         for b in buckets {
-            println!("{:<5} {:<7}", b.index, b.bucket.len());
+            let active = b.bucket.iter().filter(|e|e.aliveness.is_some()).count();
+            println!("{:<5} {:<7} {}", b.index, b.bucket.len(), active);
             if verbose {
                 for p in b.bucket {
                     println!("      {}", p);
@@ -142,6 +128,20 @@ pub(crate) fn cli_dump_kbuckets(app: &App, args: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
+
+pub(crate) fn cli_dump_messengers(app: &App, _args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
+
+    task::block_on(async {
+        let messengers = kad.dump_messengers().await;
+        println!("Remote-Peer-Id                                       Reuse CID   SID    DIR Protocol");
+        for m in messengers {
+            println!("{:52} {:<5} {}", m.peer, m.reuse, m.stream);
+        }
+    });
+
+    Ok(CmdExeCode::Ok)
+}
 
 pub(crate) fn get_value(app: &App, args: &[&str]) -> XcliResult {
     let mut kad = handler(app);

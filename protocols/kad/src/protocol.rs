@@ -39,7 +39,7 @@ use libp2prs_core::upgrade::UpgradeInfo;
 use libp2prs_core::{Multiaddr, PeerId, ProtocolId};
 use libp2prs_swarm::connection::Connection;
 use libp2prs_swarm::protocol_handler::{IProtocolHandler, Notifiee, ProtocolHandler};
-use libp2prs_swarm::substream::Substream;
+use libp2prs_swarm::substream::{Substream, SubstreamView};
 use libp2prs_swarm::Control as SwarmControl;
 use libp2prs_traits::{ReadEx, WriteEx};
 
@@ -309,6 +309,14 @@ pub(crate) struct KadMessenger {
     reuse: usize,
 }
 
+/// View for Debugging purpose.
+#[derive(Debug)]
+pub struct KadMessengerView {
+    pub peer: PeerId,
+    pub stream: SubstreamView,
+    pub reuse: usize
+}
+
 impl KadMessenger {
     pub(crate) async fn build(mut swarm: SwarmControl, peer: PeerId, config: KademliaProtocolConfig) -> Result<Self, KadError> {
         // open a new stream, don't use DHT, as we are parts of DHT
@@ -321,12 +329,20 @@ impl KadMessenger {
         })
     }
 
+    pub(crate) fn to_view(&self) -> KadMessengerView {
+        KadMessengerView {
+            peer: self.peer.clone(),
+            stream: self.stream.to_view(),
+            reuse: self.reuse
+        }
+    }
+
     pub(crate) fn get_peer_id(&self) -> &PeerId {
         &self.peer
     }
 
     // update reuse count, true means yes please reuse, otherwise, messenger is recycled
-    pub(crate) async fn reuse(&mut self) -> bool {
+    pub(crate) fn reuse(&mut self) -> bool {
         self.reuse += 1;
         self.reuse < self.config.max_reuse_count
     }

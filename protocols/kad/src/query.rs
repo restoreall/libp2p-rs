@@ -127,12 +127,12 @@ impl FixedQuery {
                             match qt {
                                 QueryType::PutRecord { record } => {
                                     if ms.send_put_value(record).await.is_ok() {
-                                        messengers.put_messenger(ms).await;
+                                        messengers.put_messenger(ms);
                                     }
                                 }
                                 QueryType::AddProvider { provider, addresses } => {
                                     if ms.send_add_provider(provider, addresses).await.is_ok() {
-                                        messengers.put_messenger(ms).await;
+                                        messengers.put_messenger(ms);
                                     }
                                 }
                                 _ => panic!("BUG"),
@@ -213,7 +213,7 @@ impl QueryJob {
         }
 
         // try to put messenger into cache
-        me.messengers.put_messenger(messenger).await;
+        me.messengers.put_messenger(messenger);
 
         Ok(())
     }

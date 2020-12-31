@@ -22,10 +22,9 @@ use fnv::{FnvHashMap, FnvHashSet};
 use std::fmt;
 use std::borrow::Borrow;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use futures::lock::Mutex;
 use futures::{
     channel::{mpsc, oneshot},
     prelude::*,
@@ -39,10 +38,7 @@ use libp2prs_core::{Multiaddr, PeerId, ProtocolId};
 use libp2prs_swarm::Control as SwarmControl;
 
 use crate::control::{Control, ControlCommand, DumpCommand};
-use crate::protocol::{
-    KadConnectionType, KadMessenger, KadPeer, KadProtocolHandler, KadRequestMsg, KadResponseMsg, KademliaProtocolConfig,
-    ProtocolEvent, RefreshStage,
-};
+use crate::protocol::{KadConnectionType, KadMessenger, KadPeer, KadProtocolHandler, KadRequestMsg, KadResponseMsg, KademliaProtocolConfig, ProtocolEvent, RefreshStage, KadMessengerView};
 
 use crate::addresses::PeerInfo;
 use crate::kbucket::KBucketsTable;
@@ -521,13 +517,13 @@ where
         let now = Instant::now();
         let key = kbucket::Key::new(peer.clone());
 
-        log::debug!("trying to add a peer to routing table: {:?} {:?}, query={}", peer, self.kbuckets.bucket_index(&key), queried);
+        log::debug!("trying to add a peer: {:?} {:?}, query={}", peer, self.kbuckets.bucket_index(&key), queried);
 
         match self.kbuckets.entry(&key) {
             kbucket::Entry::Present(mut entry) => {
                 // already in RT, update the node's aliveness if queried is true
                 if queried {
-                    entry.value().set_aliveness(Instant::now());
+                    entry.value().set_aliveness(Some(Instant::now()));
                     log::debug!("{:?} updated: {:?}", peer, entry.value());
                 }
             }
@@ -542,7 +538,7 @@ where
                     let candidate = bucket
                         .iter()
                         .filter(|n| {
-                            n.value.is_replaceable() && n.value.get_aliveness().map_or(true, |a| now.duration_since(a) > timeout)
+                            n.value.get_aliveness().map_or(true, |a| now.duration_since(a) > timeout)
                         })
                         .min_by(|x, y| x.value.get_aliveness().cmp(&y.value.get_aliveness()));
 
@@ -568,13 +564,31 @@ where
     fn try_remove_peer(&mut self, peer: PeerId) -> Option<kbucket::EntryView<kbucket::Key<PeerId>, PeerInfo>> {
         let key = kbucket::Key::new(peer.clone());
 
-        log::debug!("trying to remove a peer from routing table: {:?} {:?}", peer, self.kbuckets.bucket_index(&key));
+        log::debug!("trying to remove a peer: {:?} {:?}", peer, self.kbuckets.bucket_index(&key));
 
         match self.kbuckets.entry(&key) {
             kbucket::Entry::Present(entry) => Some(entry.remove()),
             kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => None,
         }
     }
+
+    /// Tries to deactivate a Node in the routing table.
+    ///
+    /// Instead of removing the node from DHT, we set its aliveness to `None`.
+    /// Thus, it could be replaced if any new node is going to be added. The
+    /// reason of this approach is we'd keep an inactive node as long as the
+    /// bucket is not full.
+    fn try_deactivate_peer(&mut self, peer: PeerId) {
+        let key = kbucket::Key::new(peer.clone());
+
+        log::debug!("trying to deactivate a peer: {:?} {:?}", peer, self.kbuckets.bucket_index(&key));
+
+        match self.kbuckets.entry(&key) {
+            kbucket::Entry::Present(mut entry) => entry.value().set_aliveness(None),
+            kbucket::Entry::Absent(..) | kbucket::Entry::SelfEntry => {},
+        }
+    }
+
 
     /// Returns an iterator over all non-empty buckets in the routing table.
     fn kbuckets(&mut self) -> impl Iterator<Item = kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>> {
@@ -827,6 +841,10 @@ where
         self.try_remove_peer(peer);
     }
 
+    fn dump_messengers(&mut self) -> Vec<KadMessengerView> {
+        self.messengers.as_ref().expect("must be Some").messengers()
+    }
+
     fn dump_kbuckets(&mut self) -> Vec<KBucketView> {
         let swarm = self.swarm.as_ref().expect("must be Some");
         let connected = &self.connected_peers;
@@ -839,7 +857,6 @@ where
                 let bucket = k.iter()
                     .map(|n|{
                         let id = n.node.key.preimage().clone();
-                        let replaceable = n.node.value.is_replaceable();
                         let aliveness = n.node.value.get_aliveness();
                         let connected = connected.contains(&id);
                         let addresses = swarm.get_addrs_vec(&id).unwrap_or_else(||vec![]);
@@ -848,7 +865,6 @@ where
                             aliveness,
                             addresses,
                             connected,
-                            replaceable
                         }
                     })
                     .collect::<Vec<_>>();
@@ -861,35 +877,6 @@ where
             .collect::<Vec<_>>();
 
         entries
-    }
-
-    fn list_all_node(&mut self) -> Vec<KadPeer> {
-        let mut peers = Vec::new();
-        let swarm = self.swarm.as_ref().expect("must be Some");
-        let connected = &self.connected_peers;
-        for kbucket in self.kbuckets.iter() {
-            if kbucket.is_empty() {
-                continue;
-            }
-            let mut kp = kbucket.iter()
-                .map(|kb| {
-                    let node_id = kb.node.key.preimage().clone();
-                    let connection_ty = if connected.contains(&node_id) {
-                        KadConnectionType::Connected
-                    } else {
-                        KadConnectionType::NotConnected
-                    };
-                    let multiaddrs = swarm.get_addrs_vec(&node_id).unwrap_or(vec![]);
-                    KadPeer {
-                        node_id,
-                        multiaddrs,
-                        connection_ty,
-                    }
-                })
-                .collect::<Vec<_>>();
-            peers.append(&mut kp);
-        }
-        peers
     }
 
     /// Performs publishing as a provider of a value for the given key.
@@ -1284,13 +1271,13 @@ where
     }
 
     // Called when new peer is connected.
-    async fn handle_peer_connected(&mut self, peer_id: PeerId) {
+    fn handle_peer_connected(&mut self, peer_id: PeerId) {
         // the peer id might have existed in the hashset, don't care too much
         self.connected_peers.insert(peer_id);
     }
 
     // Called when a peer is disconnected.
-    async fn handle_peer_disconnected(&mut self, peer_id: PeerId) {
+    fn handle_peer_disconnected(&mut self, peer_id: PeerId) {
         // remove the peer from the hashset
         self.connected_peers.remove(&peer_id);
         // remove the cached messenger which belong to the disconnected connection
@@ -1299,12 +1286,12 @@ where
         // any peer disconnected notification, we remove the cached messenger anyway.
         // It is acceptable, as we can always re-open a messenger...
         if let Some(cache) = &mut self.messengers {
-            cache.clear_messengers(&peer_id).await;
+            cache.clear_messengers(&peer_id);
         }
     }
 
     // Called when a peer is identified.
-    async fn handle_peer_identified(&mut self, peer_id: PeerId) {
+    fn handle_peer_identified(&mut self, peer_id: PeerId) {
         // check if the peer is a eligible Kad peer, try add to Kad if it is
         if let Some(_swarm) = &mut self.swarm {
             // TODO:
@@ -1314,13 +1301,14 @@ where
     }
 
     // handle a new Kad peer is found.
-    async fn handle_peer_found(&mut self, peer_id: PeerId, queried: bool) {
+    fn handle_peer_found(&mut self, peer_id: PeerId, queried: bool) {
         self.try_add_peer(peer_id, queried);
     }
 
     // handle a Kad peer is dead.
-    async fn handle_peer_stopped(&mut self, peer_id: PeerId) {
-        self.try_remove_peer(peer_id);
+    fn handle_peer_stopped(&mut self, peer_id: PeerId) {
+        //self.try_remove_peer(peer_id);
+        self.try_deactivate_peer(peer_id);
     }
 
     // Handle Kad events sent from protocol handler.
@@ -1328,23 +1316,23 @@ where
         log::debug!("handle kad event: {:?}", msg);
         match msg {
             Some(ProtocolEvent::PeerConnected(peer_id)) => {
-                self.handle_peer_connected(peer_id).await;
+                self.handle_peer_connected(peer_id);
                 Ok(())
             }
             Some(ProtocolEvent::PeerDisconnected(peer_id)) => {
-                self.handle_peer_disconnected(peer_id).await;
+                self.handle_peer_disconnected(peer_id);
                 Ok(())
             }
             Some(ProtocolEvent::PeerIdentified(peer_id)) => {
-                self.handle_peer_identified(peer_id).await;
+                self.handle_peer_identified(peer_id);
                 Ok(())
             }
             Some(ProtocolEvent::KadPeerFound(peer_id, queried)) => {
-                self.handle_peer_found(peer_id, queried).await;
+                self.handle_peer_found(peer_id, queried);
                 Ok(())
             }
             Some(ProtocolEvent::KadPeerStopped(peer_id)) => {
-                self.handle_peer_stopped(peer_id).await;
+                self.handle_peer_stopped(peer_id);
                 Ok(())
             }
             Some(ProtocolEvent::KadRequest { request, source, reply }) => {
@@ -1544,9 +1532,6 @@ where
             Some(ControlCommand::RemoveNode(peer)) => {
                 self.remove_node(peer);
             }
-            Some(ControlCommand::ListAllNode(reply)) => {
-                let _ = reply.send(self.list_all_node());
-            }
             Some(ControlCommand::Lookup(key, reply)) => {
                 self.get_closest_peers(key, |r| {
                     let _ = reply.send(r);
@@ -1581,6 +1566,10 @@ where
                 match cmd {
                     DumpCommand::Entries(reply) => {
                         let _ = reply.send(self.dump_kbuckets());
+
+                    }
+                    DumpCommand::Messengers(reply) => {
+                        let _ = reply.send(self.dump_messengers());
 
                     }
                 }
@@ -1691,7 +1680,7 @@ impl MessengerManager {
     pub(crate) async fn get_messenger(&mut self, peer: &PeerId) -> Result<KadMessenger> {
         // lock as little as possible
         let r = {
-            let mut cache = self.cache.lock().await;
+            let mut cache = self.cache.lock().unwrap();
             cache.remove(peer)
         };
 
@@ -1704,9 +1693,9 @@ impl MessengerManager {
         }
     }
 
-    pub(crate) async fn put_messenger(&mut self, mut messenger: KadMessenger) {
-        if messenger.reuse().await {
-            let mut cache = self.cache.lock().await;
+    pub(crate) fn put_messenger(&mut self, mut messenger: KadMessenger) {
+        if messenger.reuse() {
+            let mut cache = self.cache.lock().unwrap();
             let peer = messenger.get_peer_id();
 
             // perhaps there is a messenger in the hashmap already
@@ -1716,9 +1705,14 @@ impl MessengerManager {
         }
     }
 
-    pub(crate) async fn clear_messengers(&mut self, peer_id: &PeerId) {
-        let mut cache = self.cache.lock().await;
+    pub(crate) fn clear_messengers(&mut self, peer_id: &PeerId) {
+        let mut cache = self.cache.lock().unwrap();
         cache.remove(peer_id);
+    }
+
+    pub(crate) fn messengers(&self) -> Vec<KadMessengerView> {
+        let cache = self.cache.lock().unwrap();
+        cache.values().map(|m|m.to_view()).collect()
     }
 }
 
@@ -1735,13 +1729,12 @@ pub struct KNodeView {
     pub aliveness: Option<Instant>,
     pub addresses: Vec<Multiaddr>,
     pub connected: bool,
-    pub replaceable: bool,
 }
 
 impl fmt::Display for KNodeView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let now = Instant::now();
-        write!(f, "{:52} C/R({}/{}) {:?} Addrs({:?})", self.id, self.connected, self.replaceable,
+        write!(f, "{:52} Conn({}) {:?} Addrs({:?})", self.id, self.connected,
                self.aliveness.map(|a|now-a), self.addresses)
     }
 }
