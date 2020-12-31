@@ -6,7 +6,11 @@ use std::str::FromStr;
 
 pub const DHT: &str = "dht";
 
-pub fn add_dht_commands(app: &mut App) {
+pub fn add_dht_commands(app: &mut App, kad: Control) {
+    // register handler
+    app.register(DHT, Box::new(kad));
+
+    // add sub commands
     let bootstrap_cmd = Command::new("bootstrap")
         .about("Show or edit the list of bootstrap peers")
         .usage("bootstrap")
@@ -57,17 +61,17 @@ fn handler(app: &App) -> Control {
     kad
 }
 
-pub(crate) fn bootstrap(app: &App, _args: &[&str]) -> XcliResult {
+fn bootstrap(app: &App, _args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
     task::block_on(async {
         kad.bootstrap().await;
-        println!("add node completed");
+        println!("start to bootstrap");
     });
 
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn add_node(app: &App, args: &[&str]) -> XcliResult {
+fn add_node(app: &App, args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
 
     if args.len() != 2 {
@@ -88,7 +92,7 @@ pub(crate) fn add_node(app: &App, args: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn rm_node(app: &App, args: &[&str]) -> XcliResult {
+fn rm_node(app: &App, args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
 
     if args.len() != 1 {
@@ -106,7 +110,7 @@ pub(crate) fn rm_node(app: &App, args: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn cli_dump_kbuckets(app: &App, args: &[&str]) -> XcliResult {
+fn cli_dump_kbuckets(app: &App, args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
 
     let verbose = if args.len() > 0 { true } else { false };
@@ -129,7 +133,7 @@ pub(crate) fn cli_dump_kbuckets(app: &App, args: &[&str]) -> XcliResult {
 }
 
 
-pub(crate) fn cli_dump_messengers(app: &App, _args: &[&str]) -> XcliResult {
+fn cli_dump_messengers(app: &App, _args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
 
     task::block_on(async {
@@ -143,7 +147,7 @@ pub(crate) fn cli_dump_messengers(app: &App, _args: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn get_value(app: &App, args: &[&str]) -> XcliResult {
+fn get_value(app: &App, args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
 
     if args.len() != 1 {
@@ -160,7 +164,7 @@ pub(crate) fn get_value(app: &App, args: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn find_peer(app: &App, args: &[&str]) -> XcliResult {
+fn find_peer(app: &App, args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
 
     if args.len() != 1 {

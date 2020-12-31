@@ -6,7 +6,11 @@ use std::convert::TryFrom;
 
 pub const SWRM: &str = "swarm";
 
-pub fn add_swarm_commands(app: &mut App) {
+pub fn add_swarm_commands(app: &mut App, swarm: Control) {
+    // register handler
+    app.register(SWRM, Box::new(swarm));
+
+    // add sub commands
     let swarm_cmd = Command::new(SWRM)
         .about("Swarm commands")
         .usage("swarm")
@@ -38,7 +42,7 @@ fn handler(app: &App) -> Control {
     swarm
 }
 
-pub(crate) fn cli_show_basic(app: &App, _args: &[&str]) -> XcliResult {
+fn cli_show_basic(app: &App, _args: &[&str]) -> XcliResult {
     let mut swarm = handler(app);
     task::block_on(async {
         let r = swarm.retrieve_networkinfo().await;
@@ -60,7 +64,7 @@ pub(crate) fn cli_show_basic(app: &App, _args: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn cli_show_connections(app: &App, args: &[&str]) -> XcliResult {
+fn cli_show_connections(app: &App, args: &[&str]) -> XcliResult {
     let mut swarm = handler(app);
 
     let peer = match args.len() {
@@ -89,7 +93,7 @@ pub(crate) fn cli_show_connections(app: &App, args: &[&str]) -> XcliResult {
 }
 
 
-pub(crate) fn cli_show_peers(app: &App, args: &[&str]) -> XcliResult {
+fn cli_show_peers(app: &App, args: &[&str]) -> XcliResult {
     let swarm = handler(app);
 
     let pid = match args.len() {

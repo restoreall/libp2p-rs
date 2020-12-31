@@ -38,9 +38,8 @@ use libp2prs_yamux as yamux;
 
 use xcli::*;
 use std::convert::TryFrom;
-use libp2prs_swarm::cli::{SWRM, add_swarm_commands};
-use libp2prs_kad::cli::{DHT, add_dht_commands};
-
+use libp2prs_swarm::cli::add_swarm_commands;
+use libp2prs_kad::cli::add_dht_commands;
 
 fn main() {
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -113,11 +112,8 @@ fn run_server(bootstrap_peer: PeerId, bootstrap_addr: Multiaddr) {
         .version("v0.1")
         .author("kingwel.xie@139.com");
 
-    app.register(SWRM, Box::new(swarm_control));
-    app.register(DHT, Box::new(kad_control));
-
-    add_swarm_commands(&mut app);
-    add_dht_commands(&mut app);
+    add_swarm_commands(&mut app, swarm_control);
+    add_dht_commands(&mut app, kad_control);
 
     app.run();
 }
