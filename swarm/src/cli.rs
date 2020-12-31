@@ -1,17 +1,14 @@
-use crate::Control;
+use std::convert::TryFrom;
 use async_std::task;
+
 use xcli::*;
 use libp2prs_core::PeerId;
-use std::convert::TryFrom;
+use crate::Control;
 
-pub const SWRM: &str = "swarm";
+const SWRM: &str = "swarm";
 
-pub fn add_swarm_commands(app: &mut App, swarm: Control) {
-    // register handler
-    app.register(SWRM, Box::new(swarm));
-
-    // add sub commands
-    let swarm_cmd = Command::new(SWRM)
+pub fn swarm_cli_commands<'a>() -> Command<'a> {
+    Command::new(SWRM)
         .about("Swarm commands")
         .usage("swarm")
         .subcommand(
@@ -31,9 +28,7 @@ pub fn add_swarm_commands(app: &mut App, swarm: Control) {
                 .about("displays peer information")
                 .usage("peer [PeerId]")
                 .action(cli_show_peers),
-        );
-
-    app.add_subcommand(swarm_cmd);
+        )
 }
 
 fn handler(app: &App) -> Control {

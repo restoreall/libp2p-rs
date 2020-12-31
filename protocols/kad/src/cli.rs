@@ -1,16 +1,13 @@
+use std::str::FromStr;
 use async_std::task;
+
 use libp2prs_core::{Multiaddr, PeerId};
 use crate::Control;
 use xcli::*;
-use std::str::FromStr;
 
-pub const DHT: &str = "dht";
+const DHT: &str = "dht";
 
-pub fn add_dht_commands(app: &mut App, kad: Control) {
-    // register handler
-    app.register(DHT, Box::new(kad));
-
-    // add sub commands
+pub fn dht_cli_commands<'a>() -> Command<'a> {
     let bootstrap_cmd = Command::new("bootstrap")
         .about("Show or edit the list of bootstrap peers")
         .usage("bootstrap")
@@ -42,7 +39,7 @@ pub fn add_dht_commands(app: &mut App, kad: Control) {
         .usage("messengers")
         .action(cli_dump_messengers);
 
-    let dht_cmd = Command::new("dht")
+    Command::new("dht")
         .about("find peer or record through dht")
         .usage("dht")
         .subcommand(bootstrap_cmd)
@@ -51,8 +48,7 @@ pub fn add_dht_commands(app: &mut App, kad: Control) {
         .subcommand(dump_dht_cmd)
         .subcommand(dump_messenger_cmd)
         .subcommand(find_peer_cmd)
-        .subcommand(get_value_cmd);
-    app.add_subcommand(dht_cmd);
+        .subcommand(get_value_cmd)
 }
 
 fn handler(app: &App) -> Control {
