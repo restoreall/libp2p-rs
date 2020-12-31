@@ -1245,20 +1245,23 @@ impl Swarm {
         if let Some(connection) = self.connections_by_id.get_mut(&cid) {
             match result {
                 Ok((info, observed_addr)) => {
-                    let remote_pubkey = connection.stream_muxer().remote_pub_key();
-                    let peer_id = connection.stream_muxer().remote_peer();
-                    //let remote_peer_id = c.remote_peer();
+                    let remote_pubkey = connection.remote_pub_key();
+                    let peer_id = connection.remote_peer();
 
                     self.handle_observed_address(observed_addr, cid);
 
                     // Insert remote peer_id and public key into peerstore->KeyBook if non-exist
                     self.peer_store.add_key(&peer_id, remote_pubkey);
 
+                    // Note, we don't use connection.remote_addr(), because it might be a NATed address/port which
+                    // changed very frequently. Instead, using info.listen_addrs is a better solution.
+
                     log::debug!("identified peer addresses {:?} protocols {:?} for {}", info.listen_addrs, info.protocols, peer_id);
                     // update peerstore with the listening addresses and protocols of the remote peer
-                    // self.peer_store.add_addr(&peer_id, connection.remote_addr(), ADDRESS_TTL, false);
                     self.peer_store.add_addrs(&peer_id, info.listen_addrs, ADDRESS_TTL, false);
                     self.peer_store.add_protocol(&peer_id, info.protocols);
+
+                    // TODO: to handle info.protocol_version .agent_version
 
                     // well, kick off all protocol handlers for the Identify completion
                     for handler in self.muxer.protocol_handlers.values_mut() {
