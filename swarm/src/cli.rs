@@ -66,7 +66,7 @@ pub(crate) fn cli_show_connections(app: &App, args: &[&str]) -> XcliResult {
     let peer = match args.len() {
         0 => None,
         1 => Some(PeerId::try_from(args[0]).map_err(|e|XcliError::BadArgument(e.to_string()))?),
-        _ => return Err(XcliError::MismatchArgument(args.iter().map(|a|a.to_string()).collect())),
+        _ => return Err(XcliError::MismatchArgument(1, args.len())),
     };
 
     task::block_on(async {
@@ -95,7 +95,7 @@ pub(crate) fn cli_show_peers(app: &App, args: &[&str]) -> XcliResult {
     let pid = match args.len() {
         0 => None,
         1 => Some(PeerId::try_from(args[0]).map_err(|e|XcliError::BadArgument(e.to_string()))?),
-        _ => return Err(XcliError::MismatchArgument(args.iter().map(|a|a.to_string()).collect())),
+        _ => return Err(XcliError::MismatchArgument(1, args.len())),
     };
 
     if let Some(peer) = pid {

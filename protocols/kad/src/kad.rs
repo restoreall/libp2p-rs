@@ -37,14 +37,14 @@ use async_std::task::JoinHandle;
 use libp2prs_core::{Multiaddr, PeerId, ProtocolId};
 use libp2prs_swarm::Control as SwarmControl;
 
-use crate::control::{Control, ControlCommand};
+use crate::control::{Control, ControlCommand, DumpCommand};
 use crate::protocol::{
     KadConnectionType, KadMessenger, KadPeer, KadProtocolHandler, KadRequestMsg, KadResponseMsg, KademliaProtocolConfig,
     ProtocolEvent, RefreshStage,
 };
 
 use crate::addresses::PeerInfo;
-use crate::kbucket::KBucketsTable;
+use crate::kbucket::{KBucketsTable, KBucketView};
 use crate::query::{FixedQuery, IterativeQuery, PeerRecord, QueryConfig, QueryType};
 use crate::store::RecordStore;
 use crate::{kbucket, record, KadError, ProviderRecord, Record};
@@ -826,6 +826,18 @@ where
         self.try_remove_peer(peer);
     }
 
+    fn dump_kbuckets(&mut self) -> Vec<KBucketView<kbucket::Key<PeerId>, PeerInfo>> {
+        // let mut buckets = Vec::new();
+        // let swarm = self.swarm.as_ref().expect("must be Some");
+        // let connected = &self.connected_peers;
+
+        self.kbuckets
+            .iter()
+            .filter(|k|!k.is_empty())
+            .map(|k| k.to_view())
+            .collect::<Vec<_>>()
+    }
+
     fn list_all_node(&mut self) -> Vec<KadPeer> {
         let mut peers = Vec::new();
         let swarm = self.swarm.as_ref().expect("must be Some");
@@ -1288,6 +1300,7 @@ where
 
     // Handle Kad events sent from protocol handler.
     async fn handle_events(&mut self, msg: Option<ProtocolEvent>) -> Result<()> {
+        log::debug!("handle kad event: {:?}", msg);
         match msg {
             Some(ProtocolEvent::PeerConnected(peer_id)) => {
                 self.handle_peer_connected(peer_id).await;
@@ -1538,6 +1551,14 @@ where
                 self.get_record(key, |r| {
                     let _ = reply.send(r);
                 });
+            }
+            Some(ControlCommand::Dump(cmd)) => {
+                match cmd {
+                    DumpCommand::Entries(reply) => {
+                        let _ = reply.send(self.dump_kbuckets());
+
+                    }
+                }
             }
             None => {}
         }

@@ -66,16 +66,6 @@ pub struct KBucket<TKey, TVal> {
     nodes: ArrayVec<[Node<TKey, TVal>; K_VALUE.get()]>,
 }
 
-/// The result of inserting an entry into a bucket.
-#[must_use]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InsertResult {
-    /// The entry has been successfully inserted.
-    Inserted,
-    /// The entry was not inserted because the relevant bucket is full.
-    Full,
-}
-
 impl<TKey, TVal> KBucket<TKey, TVal>
     where
         TKey: Clone + AsRef<KeyBytes>,

@@ -32,6 +32,11 @@ pub fn add_dht_commands(app: &mut App) {
         .usage("getvalue <key>")
         .action(get_value);
 
+    let dump_dht_cmd = Command::new("dump")
+        .about("Dump KBuckets")
+        .usage("dump")
+        .action(dump_kbuckets);
+
     let dht_cmd = Command::new("dht")
         .about("find peer or record through dht")
         .usage("dht")
@@ -39,21 +44,20 @@ pub fn add_dht_commands(app: &mut App) {
         .subcommand(add_node_cmd)
         .subcommand(rm_node_cmd)
         .subcommand(list_node_cmd)
+        .subcommand(dump_dht_cmd)
         .subcommand(find_peer_cmd)
         .subcommand(get_value_cmd);
     app.add_subcommand(dht_cmd);
 }
 
-pub(crate) fn bootstrap(app: &App, _actions: &[&str]) -> XcliResult {
-    let value_any = app.get_handler(DHT)?;
-    let mut kad = match value_any.downcast_ref::<Control>() {
-        Some(ctrl) => ctrl.clone(),
-        None => {
-            println!("downcast failed");
-            return Err(XcliError::BadSyntax)
-        }
-    };
+fn handler(app: &App) -> Control {
+    let value_any = app.get_handler(DHT).expect(DHT);
+    let kad = value_any.downcast_ref::<Control>().expect("control").clone();
+    kad
+}
 
+pub(crate) fn bootstrap(app: &App, _args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
     task::block_on(async {
         kad.bootstrap().await;
         println!("add node completed");
@@ -62,18 +66,15 @@ pub(crate) fn bootstrap(app: &App, _actions: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn add_node(app: &App, actions: &[&str]) -> XcliResult {
-    let value_any = app.get_handler(DHT)?;
-    let mut kad = match value_any.downcast_ref::<Control>() {
-        Some(ctrl) => ctrl.clone(),
-        None => {
-            println!("downcast failed");
-            return Err(XcliError::BadSyntax)
-        }
-    };
+pub(crate) fn add_node(app: &App, args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
 
-    let pid = actions.get(0).cloned().ok_or(XcliError::BadSyntax)?;
-    let addr = actions.get(1).cloned().ok_or(XcliError::BadSyntax)?;
+    if args.len() != 2 {
+        return Err(XcliError::MismatchArgument(2, args.len()));
+    }
+
+    let pid = args.get(0).unwrap();
+    let addr = args.get(1).unwrap();
 
     let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(e.to_string()))?;
     let address = Multiaddr::from_str(addr).map_err(|e| XcliError::BadArgument(e.to_string()))?;
@@ -86,17 +87,14 @@ pub(crate) fn add_node(app: &App, actions: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn rm_node(app: &App, actions: &[&str]) -> XcliResult {
-    let value_any = app.get_handler(DHT)?;
-    let mut kad = match value_any.downcast_ref::<Control>() {
-        Some(ctrl) => ctrl.clone(),
-        None => {
-            println!("downcast failed");
-            return Err(XcliError::BadSyntax)
-        }
-    };
+pub(crate) fn rm_node(app: &App, args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
 
-    let pid = actions.get(0).cloned().ok_or(XcliError::BadSyntax)?;
+    if args.len() != 1 {
+        return Err(XcliError::MismatchArgument(1, args.len()));
+    }
+
+    let pid = args.get(0).unwrap();
     let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(e.to_string()))?;
 
     task::block_on(async {
@@ -107,15 +105,8 @@ pub(crate) fn rm_node(app: &App, actions: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn list_all_node(app: &App, _actions: &[&str]) -> XcliResult {
-    let value_any = app.get_handler(DHT)?;
-    let mut kad = match value_any.downcast_ref::<Control>() {
-        Some(ctrl) => ctrl.clone(),
-        None => {
-            println!("downcast failed");
-            return Err(XcliError::BadSyntax)
-        }
-    };
+pub(crate) fn list_all_node(app: &App, _args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
 
     task::block_on(async {
         let peers = kad.list_all_node().await;
@@ -130,16 +121,29 @@ pub(crate) fn list_all_node(app: &App, _actions: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn get_value(app: &App, actions: &[&str]) -> XcliResult {
-    let value_any = app.get_handler(DHT)?;
-    let mut kad = match value_any.downcast_ref::<Control>() {
-        Some(ctrl) => ctrl.clone(),
-        None => {
-            println!("downcast failed");
-            return Err(XcliError::BadSyntax)
+pub(crate) fn dump_kbuckets(app: &App, _args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
+
+    task::block_on(async {
+        let buckets = kad.dump_kbuckets().await;
+        println!("Index Entries Nodes");
+        for p in buckets {
+            println!("{:?} {:5} {:?}", p.index, p.bucket.num_entries(), p.bucket);
         }
-    };
-    let key = actions.get(0).cloned().ok_or(XcliError::BadSyntax)?;
+    });
+
+    Ok(CmdExeCode::Ok)
+}
+
+
+pub(crate) fn get_value(app: &App, args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
+
+    if args.len() != 1 {
+        return Err(XcliError::MismatchArgument(1, args.len()));
+    }
+
+    let key = args.get(0).unwrap().clone();
 
     task::block_on(async {
         let value = kad.get_value(Vec::from(key)).await;
@@ -149,17 +153,14 @@ pub(crate) fn get_value(app: &App, actions: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn find_peer(app: &App, actions: &[&str]) -> XcliResult {
-    let value_any = app.get_handler(DHT)?;
-    let mut kad = match value_any.downcast_ref::<Control>() {
-        Some(ctrl) => ctrl.clone(),
-        None => {
-            println!("downcast failed");
-            return Err(XcliError::BadSyntax)
-        }
-    };
+pub(crate) fn find_peer(app: &App, args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
 
-    let pid = actions.get(0).cloned().ok_or(XcliError::BadSyntax)?;
+    if args.len() != 1 {
+        return Err(XcliError::MismatchArgument(1, args.len()));
+    }
+
+    let pid = args.get(0).unwrap();
     let peer = PeerId::from_str(pid).map_err(|e| XcliError::BadArgument(e.to_string()))?;
 
     task::block_on(async {
