@@ -923,12 +923,12 @@ mod test_closest_peers {
     }
 }
 
-#[cfg(test)]
-mod test_fixed_query {
-    use crate::query::{FixedQuery, QueryType};
-
-    #[test]
-    fn test_fixed_query() {
-        FixedQuery::new(QueryType::FindPeer, );
-    }
-}
+// #[cfg(test)]
+// mod test_fixed_query {
+//     use crate::query::{FixedQuery, QueryType};
+//
+//     #[test]
+//     fn test_fixed_query() {
+//         FixedQuery::new(QueryType::FindPeer, );
+//     }
+// }

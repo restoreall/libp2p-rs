@@ -623,8 +623,7 @@ mod tests {
             let num_to_target = table.count_nodes_between(&target);
             let distance = table.local_key.distance(&target);
             let base2 = U256::from(2);
-            let mut iter = ClosestBucketsIter::new(distance);
-            iter.all(|i| {
+            ClosestBucketsIter::new(distance).all(|i| {
                 // Flip the distance bit related to the bucket.
                 let d = Distance(distance.0 ^ (base2.pow(U256::from(i.get()))));
                 let k = table.local_key.for_distance(d);
@@ -639,5 +638,10 @@ mod tests {
         }
 
         QuickCheck::new().tests(10).quickcheck(prop as fn(_, _) -> _)
+    }
+
+    #[test]
+    fn distribution() {
+
     }
 }
