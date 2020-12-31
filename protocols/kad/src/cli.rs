@@ -35,7 +35,7 @@ pub fn add_dht_commands(app: &mut App) {
     let dump_dht_cmd = Command::new("dump")
         .about("Dump KBuckets")
         .usage("dump")
-        .action(dump_kbuckets);
+        .action(cli_dump_kbuckets);
 
     let dht_cmd = Command::new("dht")
         .about("find peer or record through dht")
@@ -121,14 +121,21 @@ pub(crate) fn list_all_node(app: &App, _args: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-pub(crate) fn dump_kbuckets(app: &App, _args: &[&str]) -> XcliResult {
+pub(crate) fn cli_dump_kbuckets(app: &App, args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
+
+    let verbose = if args.len() > 0 { true } else { false };
 
     task::block_on(async {
         let buckets = kad.dump_kbuckets().await;
-        println!("Index Entries Nodes");
-        for p in buckets {
-            println!("{:?} {:5} {:?}", p.index, p.bucket.num_entries(), p.bucket);
+        println!("Index Entries");
+        for b in buckets {
+            println!("{:<5} {:<7}", b.index, b.bucket.len());
+            if verbose {
+                for p in b.bucket {
+                    println!("      {}", p);
+                }
+            }
         }
     });
 

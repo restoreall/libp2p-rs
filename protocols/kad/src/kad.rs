@@ -19,6 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use fnv::{FnvHashMap, FnvHashSet};
+use std::fmt;
 use std::borrow::Borrow;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -44,7 +45,7 @@ use crate::protocol::{
 };
 
 use crate::addresses::PeerInfo;
-use crate::kbucket::{KBucketsTable, KBucketView};
+use crate::kbucket::KBucketsTable;
 use crate::query::{FixedQuery, IterativeQuery, PeerRecord, QueryConfig, QueryType};
 use crate::store::RecordStore;
 use crate::{kbucket, record, KadError, ProviderRecord, Record};
@@ -826,16 +827,40 @@ where
         self.try_remove_peer(peer);
     }
 
-    fn dump_kbuckets(&mut self) -> Vec<KBucketView<kbucket::Key<PeerId>, PeerInfo>> {
-        // let mut buckets = Vec::new();
-        // let swarm = self.swarm.as_ref().expect("must be Some");
-        // let connected = &self.connected_peers;
+    fn dump_kbuckets(&mut self) -> Vec<KBucketView> {
+        let swarm = self.swarm.as_ref().expect("must be Some");
+        let connected = &self.connected_peers;
 
-        self.kbuckets
+        let entries = self.kbuckets
             .iter()
             .filter(|k|!k.is_empty())
-            .map(|k| k.to_view())
-            .collect::<Vec<_>>()
+            .map(|k| {
+                let index = k.index();
+                let bucket = k.iter()
+                    .map(|n|{
+                        let id = n.node.key.preimage().clone();
+                        let replaceable = n.node.value.is_replaceable();
+                        let aliveness = n.node.value.get_aliveness();
+                        let connected = connected.contains(&id);
+                        let addresses = swarm.get_addrs_vec(&id).unwrap_or_else(||vec![]);
+                        KNodeView {
+                            id,
+                            aliveness,
+                            addresses,
+                            connected,
+                            replaceable
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                KBucketView {
+                    index,
+                    bucket
+                }
+            })
+            .collect::<Vec<_>>();
+
+        entries
     }
 
     fn list_all_node(&mut self) -> Vec<KadPeer> {
@@ -1694,5 +1719,29 @@ impl MessengerManager {
     pub(crate) async fn clear_messengers(&mut self, peer_id: &PeerId) {
         let mut cache = self.cache.lock().await;
         cache.remove(peer_id);
+    }
+}
+
+/// A view/copy of a bucket in a [`KBucketsTable`].
+#[derive(Debug)]
+pub struct KBucketView {
+    pub index: usize,
+    pub bucket: Vec<KNodeView>,
+}
+
+#[derive(Debug)]
+pub struct KNodeView {
+    pub id: PeerId,
+    pub aliveness: Option<Instant>,
+    pub addresses: Vec<Multiaddr>,
+    pub connected: bool,
+    pub replaceable: bool,
+}
+
+impl fmt::Display for KNodeView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let now = Instant::now();
+        write!(f, "{:52} C/R({}/{}) {:?} Addrs({:?})", self.id, self.connected, self.replaceable,
+               self.aliveness.map(|a|now-a), self.addresses)
     }
 }

@@ -24,9 +24,8 @@ use libp2prs_core::{Multiaddr, PeerId};
 
 use crate::protocol::KadPeer;
 use crate::query::PeerRecord;
-use crate::{record, KadError, kbucket};
-use crate::kbucket::KBucketView;
-use crate::addresses::PeerInfo;
+use crate::{record, KadError};
+use crate::kad::KBucketView;
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -62,7 +61,7 @@ pub(crate) enum ControlCommand {
 #[derive(Debug)]
 pub enum DumpCommand {
     /// Dump the Kad DHT kbuckets. Empty kbucket will be ignored.
-    Entries(oneshot::Sender<Vec<KBucketView<kbucket::Key<PeerId>, PeerInfo>>>),
+    Entries(oneshot::Sender<Vec<KBucketView>>),
 }
 
 #[derive(Clone)]
@@ -103,7 +102,7 @@ impl Control {
         rx.await.expect("list all node reply failed")
     }
 
-    pub async fn dump_kbuckets(&mut self) -> Vec<KBucketView<kbucket::Key<PeerId>, PeerInfo>> {
+    pub async fn dump_kbuckets(&mut self) -> Vec<KBucketView> {
         let (tx, rx) = oneshot::channel();
         self.control_sender
             .send(ControlCommand::Dump(DumpCommand::Entries(tx)))

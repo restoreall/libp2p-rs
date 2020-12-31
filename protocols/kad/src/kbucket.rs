@@ -464,20 +464,6 @@ where
             },
         })
     }
-
-    pub fn to_view(&'a self) -> KBucketView<TKey, TVal> {
-        KBucketView {
-            index: self.index,
-            bucket: self.bucket.clone()
-        }
-    }
-}
-
-/// A view/copy of a bucket in a [`KBucketsTable`].
-#[derive(Debug)]
-pub struct KBucketView<TKey, TVal> {
-    pub index: BucketIndex,
-    pub bucket: KBucket<TKey, TVal>,
 }
 
 #[cfg(test)]
