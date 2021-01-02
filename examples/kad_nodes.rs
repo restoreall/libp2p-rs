@@ -35,8 +35,8 @@ use libp2prs_kad::store::MemoryStore;
 
 use xcli::*;
 use libp2prs_multiaddr::protocol::Protocol;
-use libp2prs_swarm::cli::add_swarm_commands;
-use libp2prs_kad::cli::add_dht_commands;
+use libp2prs_swarm::cli::swarm_cli_commands;
+use libp2prs_kad::cli::dht_cli_commands;
 
 fn main() {
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -53,8 +53,8 @@ fn main() {
         .version("v0.1")
         .author("kingwel.xie@139.com");
 
-    add_swarm_commands(&mut app, swarm_control);
-    add_dht_commands(&mut app, kad_control);
+    app.add_subcommand_with_userdata(swarm_cli_commands(), Box::new(swarm_control));
+    app.add_subcommand_with_userdata(dht_cli_commands(), Box::new(kad_control));
 
     app.run();
 }

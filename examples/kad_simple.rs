@@ -38,14 +38,8 @@ use libp2prs_yamux as yamux;
 
 use xcli::*;
 use std::convert::TryFrom;
-<<<<<<< HEAD
-use libp2prs_swarm::cli::add_swarm_commands;
-use libp2prs_kad::cli::add_dht_commands;
-=======
 use libp2prs_swarm::cli::swarm_cli_commands;
 use libp2prs_kad::cli::dht_cli_commands;
-
->>>>>>> cli: api add_subcommand_with_userdata
 
 fn main() {
     env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
