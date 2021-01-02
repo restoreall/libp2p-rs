@@ -1293,10 +1293,11 @@ where
     // Called when a peer is identified.
     fn handle_peer_identified(&mut self, peer_id: PeerId) {
         // check if the peer is a eligible Kad peer, try add to Kad if it is
-        if let Some(_swarm) = &mut self.swarm {
-            // TODO:
-            //if swarm.first_supported_protocol()
-            self.try_add_peer(peer_id, false);
+        if let Some(swarm) = &mut self.swarm {
+            if swarm.first_supported_protocol(&peer_id, vec![self.protocol_config.protocol_name().to_string()]).is_some() {
+                log::debug!("A peer identified as a qualified Kad peer: {:}", peer_id);
+                self.try_add_peer(peer_id, false);
+            }
         }
     }
 

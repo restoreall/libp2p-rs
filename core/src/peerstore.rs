@@ -22,7 +22,7 @@ use crate::peerstore::AddrType::{KAD, OTHER};
 use crate::{Multiaddr, PeerId, PublicKey};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::str::FromStr;
@@ -215,22 +215,22 @@ impl PeerStore {
         guard.protos.remove_protocol(peer_id);
     }
 
-    /// Get support protocol by peer_id
+    /// Get supported protocol by peer_id.
     pub fn get_protocol(&self, peer_id: &PeerId) -> Option<Vec<String>> {
         let guard = self.inner.lock().unwrap();
         guard.protos.get_protocol(peer_id)
     }
 
-    /// Get the first protocol which matched by given protocols
+    /// Get the first protocol which is matched by the given protocols.
     pub fn first_supported_protocol(&self, peer_id: &PeerId, proto: Vec<String>) -> Option<String> {
         let guard = self.inner.lock().unwrap();
         guard.protos.first_supported_protocol(peer_id, proto)
     }
 
-    /// Search all protocols and return an option that matches by given proto param
-    pub fn support_protocol(&self, peer_id: &PeerId, proto: Vec<String>) -> Option<Vec<String>> {
+    /// Search all protocols and return an option that matches by given proto param.
+    pub fn support_protocols(&self, peer_id: &PeerId, proto: Vec<String>) -> Option<Vec<String>> {
         let guard = self.inner.lock().unwrap();
-        guard.protos.support_protocol(peer_id, proto)
+        guard.protos.support_protocols(peer_id, proto)
     }
 
     /// Remove timeout address
@@ -451,7 +451,7 @@ impl KeyBook {
 /// Store all protocols that the peer supports.
 #[derive(Default, Clone)]
 struct ProtoBook {
-    proto_book: HashMap<PeerId, HashMap<String, i32>>,
+    proto_book: HashMap<PeerId, HashSet<String>>,
 }
 
 impl fmt::Debug for ProtoBook {
@@ -472,14 +472,14 @@ impl ProtoBook {
     fn add_protocol(&mut self, peer_id: &PeerId, proto: Vec<String>) {
         if let Some(s) = self.proto_book.get_mut(peer_id) {
             for item in proto {
-                s.insert(item, 1);
+                s.insert(item);
             }
         } else {
-            let mut hmap = HashMap::new();
+            let mut s = HashSet::new();
             for item in proto {
-                hmap.insert(item, 1);
+                s.insert(item);
             }
-            self.proto_book.insert(peer_id.clone(), hmap);
+            self.proto_book.insert(peer_id.clone(), s);
         }
     }
 
@@ -491,9 +491,9 @@ impl ProtoBook {
 
     fn get_protocol(&self, peer_id: &PeerId) -> Option<Vec<String>> {
         match self.proto_book.get(peer_id) {
-            Some(hmap) => {
+            Some(set) => {
                 let mut result = Vec::<String>::new();
-                for (s, _) in hmap.iter() {
+                for s in set.iter() {
                     result.push(s.parse().unwrap())
                 }
                 Some(result)
@@ -505,9 +505,9 @@ impl ProtoBook {
     /// Get the first protocol which matched by given protocols
     fn first_supported_protocol(&self, peer_id: &PeerId, proto: Vec<String>) -> Option<String> {
         match self.proto_book.get(peer_id) {
-            Some(hmap) => {
+            Some(s) => {
                 for item in proto {
-                    if hmap.contains_key(&item) {
+                    if s.contains(&item) {
                         return Some(item);
                     }
                 }
@@ -518,12 +518,12 @@ impl ProtoBook {
     }
 
     /// Search all protocols and return an option that matches by given proto param
-    fn support_protocol(&self, peer_id: &PeerId, proto: Vec<String>) -> Option<Vec<String>> {
+    fn support_protocols(&self, peer_id: &PeerId, proto: Vec<String>) -> Option<Vec<String>> {
         match self.proto_book.get(peer_id) {
-            Some(hmap) => {
+            Some(s) => {
                 let mut proto_list = Vec::new();
                 for item in proto {
-                    if hmap.contains_key(&item) {
+                    if s.contains(&item) {
                         proto_list.push(item)
                     }
                 }
@@ -539,7 +539,7 @@ impl ProtoBook {
         let mut proto = vec![];
         for (k, v) in self.proto_book.iter() {
             peer.push(k.clone());
-            for key in v.keys() {
+            for key in v.iter() {
                 if !proto.contains(key) {
                     proto.push(key.clone())
                 }
@@ -609,7 +609,7 @@ mod tests {
             "/libp2p/noise/1.0.0".to_string(),
             "/libp2p/yamux/1.0.0".to_string(),
         ];
-        let support_protocol = proto.support_protocol(&peer_id, option_support_list);
+        let support_protocol = proto.support_protocols(&peer_id, option_support_list);
         assert_eq!(
             support_protocol.unwrap(),
             vec!["/libp2p/secio/1.0.0".to_string(), "/libp2p/yamux/1.0.0".to_string()]

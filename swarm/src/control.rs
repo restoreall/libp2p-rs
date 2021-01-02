@@ -94,6 +94,7 @@ pub struct Control {
     metric: Arc<Metric>,
 }
 
+#[allow(dead_code)]
 impl Control {
     pub(crate) fn new(sender: mpsc::Sender<SwarmControlCmd>, peer_store: PeerStore, metric: Arc<Metric>) -> Self {
         Control {
@@ -284,7 +285,19 @@ impl Control {
         self.peer_store.remove_protocol(peer_id);
     }
 
+    /// Get the protocols supported by the specified PeerId.
     pub fn get_protocol(&self, peer_id: &PeerId) -> Option<Vec<String>> {
         self.peer_store.get_protocol(peer_id)
     }
+
+    /// Test if the PeerId supports the given protocols.
+    pub fn first_supported_protocol(&self, peer_id: &PeerId, proto: Vec<String>) -> Option<String> {
+        self.peer_store.first_supported_protocol(peer_id, proto)
+    }
+
+    /// Search all protocols and return an option that matches by given proto param
+    fn support_protocols(&self, peer_id: &PeerId, proto: Vec<String>) -> Option<Vec<String>> {
+        self.peer_store.support_protocols(peer_id, proto)
+    }
+
 }
