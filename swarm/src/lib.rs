@@ -847,6 +847,8 @@ impl Swarm {
             return;
         }
 
+        self.peer_store.add_addrs(&peer_id, addrs.clone(), ADDRESS_TTL);
+
         // allocate transaction id and push box::f into hashmap for post-processing
         let tid = self.assign_tid();
         self.dial_transactions.insert(tid, Box::new(f));

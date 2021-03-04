@@ -496,7 +496,7 @@ impl IterativeQuery {
                 // to PeerStore
                 for peer in closer.iter() {
                     // kingwel, we filter out all loopback addresses
-                    let addrs = peer.multiaddrs.iter().filter(|a| !a.is_loopback_addr()).cloned().collect();
+                    let addrs = peer.clone().multiaddrs;
                     me.swarm.add_addrs(&peer.node_id, addrs, TEMP_ADDR_TTL);
                 }
 
@@ -659,13 +659,17 @@ impl IterativeQuery {
 
         // a runtime for query
         let query = async move {
+
             let seeds = me
                 .seeds
                 .iter()
-                .map(|k| KadPeer {
-                    node_id: k.clone().into_preimage(),
-                    multiaddrs: vec![],
-                    connection_ty: KadConnectionType::CanConnect,
+                .map(|k| {
+                    let id = k.clone().into_preimage();
+                    KadPeer {
+                        node_id: id,
+                        multiaddrs: me.swarm.get_addrs(&id).unwrap(),
+                        connection_ty: KadConnectionType::CanConnect,
+                    }
                 })
                 .collect();
 
@@ -733,6 +737,7 @@ impl IterativeQuery {
                     let _ = task::spawn(async move {
                         let r = job.execute().await;
                         if r.is_err() {
+                            log::debug!("Unreachable error: {:?}", r);
                             let _ = tx.send(QueryUpdate::Unreachable(peer_id)).await;
                         }
                     });
