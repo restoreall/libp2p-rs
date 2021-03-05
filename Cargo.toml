@@ -27,35 +27,20 @@ default = [
   "websocket-async-std",
   "yamux",
 ]
-simple-async-std = [
-  "noise",
-  "mplex",
-  "rt-async-std",
-  "swarm-async-std",
-  "tcp-async-std",
-]
-simple-tokio = [
-  "noise",
-  "mplex",
-  "rt-tokio",
-  "swarm-tokio",
-  "tcp-tokio",
-]
-routed-async-std = [
-  "kad-async-std",
-  "noise",
-  "mplex",
-  "rt-async-std",
-  "swarm-async-std",
-  "tcp-async-std",
-]
-routed-tokio = [
+tokio = [
+  "dns-tokio",
+  "floodsub-tokio",
   "kad-tokio",
-  "noise",
-  "mplex",
   "rt-tokio",
+  "mdns-tokio",
+  "mplex",
+  "noise",
+  "plaintext",
+  "secio",
   "swarm-tokio",
   "tcp-tokio",
+  "websocket-tokio",
+  "yamux",
 ]
 
 rt-tokio = ["libp2prs-runtime/tokio"]
