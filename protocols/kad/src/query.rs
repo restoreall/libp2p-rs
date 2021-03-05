@@ -667,7 +667,7 @@ impl IterativeQuery {
                     let id = k.clone().into_preimage();
                     KadPeer {
                         node_id: id,
-                        multiaddrs: me.swarm.get_addrs(&id).unwrap(),
+                        multiaddrs: me.swarm.get_addrs(&id).unwrap_or_default(),
                         connection_ty: KadConnectionType::CanConnect,
                     }
                 })
