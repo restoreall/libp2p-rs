@@ -531,12 +531,14 @@ impl IterativeQuery {
                                 // append or create the query_results.providers
                                 if let Some(mut old) = query_results.providers.take() {
                                     old.extend(provider);
+                                    // remove duplicated peers
+                                    old.dedup_by(|a, b| a.node_id == b.node_id);
                                     query_results.providers = Some(old);
                                 } else {
                                     query_results.providers = Some(provider);
                                 }
                                 // check if we have enough providers
-                                if query_results.providers.as_ref().map_or(0, |p| p.len()) >= count {
+                                if count != 0 && query_results.providers.as_ref().map_or(0, |p| p.len()) >= count {
                                     log::debug!("GetProviders: got enough provider for {:?}, limit={}", me.key, count);
                                     return true;
                                 }

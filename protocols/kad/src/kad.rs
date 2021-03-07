@@ -735,6 +735,9 @@ where
 
     /// Performs a lookup for providers of a value to the given key.
     ///
+    /// count: How many providers are needed. 0 means to lookup the DHT to find as
+    /// many as possible.
+    ///
     /// The result of this operation is delivered into the callback
     /// Fn(Result<Vec<KadPeer>>).
     fn get_providers<F>(&mut self, key: record::Key, count: usize, f: F)
@@ -743,14 +746,13 @@ where
     {
         let provider_peers = self.provider_peers(&key, None);
 
-        if provider_peers.len() >= count {
+        if count != 0 && provider_peers.len() >= count {
             // ok, we have enough providers for this key, simply return
             f(Ok(provider_peers));
         } else {
-            let remaining = count - provider_peers.len();
             let q = self.prepare_iterative_query(
                 QueryType::GetProviders {
-                    count: remaining,
+                    count,
                     local: Some(provider_peers),
                 },
                 key,

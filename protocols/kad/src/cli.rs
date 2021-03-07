@@ -269,7 +269,7 @@ fn cli_find_providers(app: &App, args: &[&str]) -> XcliResult {
     let key = args.get(0).unwrap();
 
     task::block_on(async {
-        let r = kad.find_providers(key.as_bytes().into(), 2).await;
+        let r = kad.find_providers(key.as_bytes().into(), 0).await;
         println!("Find Providers: {:?}", r);
     });
 
