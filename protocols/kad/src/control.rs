@@ -71,6 +71,8 @@ pub(crate) enum ControlCommand {
 /// The dump commands can be used to dump internal data of Kad-DHT.
 #[derive(Debug)]
 pub enum DumpCommand {
+    /// Dump the Providers in the local storage.
+    Storage(oneshot::Sender<()>),
     /// Dump the Kad DHT kbuckets. Empty kbucket will be ignored.
     Entries(oneshot::Sender<Vec<KBucketView>>),
     /// Dump the Kad statistics.
@@ -102,6 +104,12 @@ impl Control {
     /// Add a node and its listening addresses to KBuckets.
     pub async fn remove_node(&mut self, peer_id: PeerId) {
         let _ = self.control_sender.send(ControlCommand::RemoveNode(peer_id)).await;
+    }
+
+    pub async fn dump_storage(&mut self) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.control_sender.send(ControlCommand::Dump(DumpCommand::Storage(tx))).await?;
+        Ok(rx.await?)
     }
 
     pub async fn dump_kbuckets(&mut self) -> Result<Vec<KBucketView>> {

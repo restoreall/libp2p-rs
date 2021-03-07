@@ -929,6 +929,11 @@ where
         self.stats.clone()
     }
 
+    // TODO:
+    fn dump_storage(&mut self) -> () {
+        ()
+    }
+
     fn dump_kbuckets(&mut self) -> Vec<KBucketView> {
         let swarm = self.swarm.as_ref().expect("must be Some");
         let connected = &self.connected_peers;
@@ -1658,6 +1663,9 @@ where
                 });
             }
             Some(ControlCommand::Dump(cmd)) => match cmd {
+                DumpCommand::Storage(reply) => {
+                    let _ = reply.send(self.dump_storage());
+                }
                 DumpCommand::Entries(reply) => {
                     let _ = reply.send(self.dump_kbuckets());
                 }

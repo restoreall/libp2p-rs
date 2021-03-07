@@ -46,15 +46,28 @@ pub fn dht_cli_commands<'a>() -> Command<'a> {
         .usage("rm [<peer>] [<multi_address>]")
         .action(cli_rm_node);
 
-    let find_peer_cmd = Command::new_with_alias("findpeer", "fp")
-        .about("find peer through dht")
-        .usage("findpeer <peerid>")
-        .action(find_peer);
+    let find_peer_cmd = Command::new_with_alias("findnode", "fn")
+        .about("find node via dht")
+        .usage("findnode <peerid>")
+        .action(cli_find_peer);
     let get_value_cmd = Command::new_with_alias("getvalue", "gv")
-        .about("get value through dht")
+        .about("get value via dht")
         .usage("getvalue <key>")
         .action(get_value);
 
+    let find_providers_cmd = Command::new_with_alias("findprov", "fp")
+        .about("find providers via dht")
+        .usage("findprov <key>")
+        .action(cli_find_providers);
+    let providing_cmd = Command::new_with_alias("provide", "pr")
+        .about("providing key to dht")
+        .usage("provide <key>")
+        .action(cli_providing);
+
+    let dump_providers_cmd = Command::new_with_alias("dump", "ls")
+        .about("dump local-store")
+        .usage("local-store")
+        .action(cli_dump_storage);
     let dump_kbucket_cmd = Command::new_with_alias("dump", "dp")
         .about("dump k-buckets")
         .usage("dump")
@@ -75,11 +88,14 @@ pub fn dht_cli_commands<'a>() -> Command<'a> {
         .subcommand(bootstrap_cmd)
         .subcommand(add_node_cmd)
         .subcommand(rm_node_cmd)
+        .subcommand(dump_providers_cmd)
         .subcommand(dump_kbucket_cmd)
         .subcommand(dump_messenger_cmd)
         .subcommand(dump_stats_cmd)
         .subcommand(find_peer_cmd)
         .subcommand(get_value_cmd)
+        .subcommand(find_providers_cmd)
+        .subcommand(providing_cmd)
 }
 
 fn handler(app: &App) -> Control {
@@ -139,6 +155,19 @@ fn cli_rm_node(app: &App, args: &[&str]) -> XcliResult {
     task::block_on(async {
         kad.remove_node(peer).await;
         println!("remove node completed");
+    });
+
+    Ok(CmdExeCode::Ok)
+}
+
+fn cli_dump_storage(app: &App, args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
+
+    let _verbose = !args.is_empty();
+
+    task::block_on(async {
+        let storage = kad.dump_storage().await.unwrap();
+        println!("{:?}", storage);
     });
 
     Ok(CmdExeCode::Ok)
@@ -212,7 +241,7 @@ fn get_value(app: &App, args: &[&str]) -> XcliResult {
     Ok(CmdExeCode::Ok)
 }
 
-fn find_peer(app: &App, args: &[&str]) -> XcliResult {
+fn cli_find_peer(app: &App, args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
 
     if args.len() != 1 {
@@ -224,7 +253,41 @@ fn find_peer(app: &App, args: &[&str]) -> XcliResult {
 
     task::block_on(async {
         let r = kad.find_peer(&peer).await;
-        println!("FindPeer: {:?}", r);
+        println!("Find Node: {:?}", r);
+    });
+
+    Ok(CmdExeCode::Ok)
+}
+
+fn cli_find_providers(app: &App, args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
+
+    if args.len() != 1 {
+        return Err(XcliError::MismatchArgument(1, args.len()));
+    }
+
+    let key = args.get(0).unwrap();
+
+    task::block_on(async {
+        let r = kad.find_providers(key.as_bytes().into(), 2).await;
+        println!("Find Providers: {:?}", r);
+    });
+
+    Ok(CmdExeCode::Ok)
+}
+
+fn cli_providing(app: &App, args: &[&str]) -> XcliResult {
+    let mut kad = handler(app);
+
+    if args.len() != 1 {
+        return Err(XcliError::MismatchArgument(1, args.len()));
+    }
+
+    let key = args.get(0).unwrap();
+
+    task::block_on(async {
+        let r = kad.provide(key.as_bytes().into()).await;
+        println!("Providing: {:?}", r);
     });
 
     Ok(CmdExeCode::Ok)
