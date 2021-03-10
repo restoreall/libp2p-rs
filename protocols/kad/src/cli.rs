@@ -200,11 +200,13 @@ fn cli_dump_statistics(app: &App, _args: &[&str]) -> XcliResult {
 
     task::block_on(async {
         let stats = kad.dump_statistics().await.unwrap();
-        println!("Total refreshes : {}", stats.total_refreshes);
-        println!("Successful queries   : {}", stats.successful_queries);
-        println!("Timeout queries   : {}", stats.timeout_queries);
-        println!("Query details   : {:?}", stats.query);
-        println!("Kad rx messages : {:?}", stats.message_rx);
+        println!("Total refreshes    : {}", stats.total_refreshes);
+        println!("Successful queries : {}", stats.successful_queries);
+        println!("Timeout queries    : {}", stats.timeout_queries);
+        println!("Running iterative  : {}", stats.running_iterative_queries);
+        println!("Running fixed      : {}", stats.running_fixed_queries);
+        println!("Query details      : {:?}", stats.query);
+        println!("Kad rx messages    : {:?}", stats.message_rx);
     });
 
     Ok(CmdExeCode::Ok)

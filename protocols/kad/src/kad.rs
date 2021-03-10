@@ -43,11 +43,12 @@ use crate::protocol::{
 
 use crate::addresses::PeerInfo;
 use crate::kbucket::KBucketsTable;
-use crate::query::{FixedQuery, IterativeQuery, PeerRecord, QueryConfig, QueryStats, QueryType};
+use crate::query::{collect_query_stats, FixedQuery, IterativeQuery, PeerRecord, QueryConfig, QueryStats, QueryType};
 use crate::store::RecordStore;
 use crate::{kbucket, record, KadError, ProviderRecord, Record};
 use libp2prs_core::peerstore::{ADDRESS_TTL, PROVIDER_ADDR_TTL};
 use libp2prs_swarm::protocol_handler::{IProtocolHandler, ProtocolImpl};
+use std::sync::atomic::Ordering;
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -129,6 +130,8 @@ pub struct Kademlia<TStore> {
 /// The statistics of Kademlia.
 #[derive(Debug, Clone, Default)]
 pub struct KademliaStats {
+    pub running_iterative_queries: usize,
+    pub running_fixed_queries: usize,
     pub successful_queries: usize,
     pub timeout_queries: usize,
     pub total_refreshes: usize,
@@ -750,13 +753,8 @@ where
             // ok, we have enough providers for this key, simply return
             f(Ok(provider_peers));
         } else {
-            let q = self.prepare_iterative_query(
-                QueryType::GetProviders {
-                    count,
-                    local: Some(provider_peers),
-                },
-                key,
-            );
+            let local = if provider_peers.is_empty() { None } else { Some(provider_peers) };
+            let q = self.prepare_iterative_query(QueryType::GetProviders { count, local }, key);
 
             q.run(|r| {
                 f(r.and_then(|r| r.providers.ok_or(KadError::NotFound)));
@@ -794,14 +792,8 @@ where
             let config = self.query_config.clone();
             let messengers = self.messengers.clone().expect("must be Some");
 
-            let needed = quorum - records.len();
-            let q = self.prepare_iterative_query(
-                QueryType::GetRecord {
-                    quorum_needed: needed,
-                    local: Some(records),
-                },
-                key,
-            );
+            let local = if records.is_empty() { None } else { Some(records) };
+            let q = self.prepare_iterative_query(QueryType::GetRecord { quorum, local }, key);
             q.run(|r| {
                 f(r.and_then(|r| {
                     let record = r.records.as_ref().map(|r| r.first().cloned());
@@ -928,6 +920,9 @@ where
     }
 
     fn dump_statistics(&mut self) -> KademliaStats {
+        let c = collect_query_stats();
+        self.stats.running_iterative_queries = c.0;
+        self.stats.running_fixed_queries = c.1;
         self.stats.clone()
     }
 

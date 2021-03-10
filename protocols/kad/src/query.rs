@@ -22,6 +22,7 @@ use futures::channel::mpsc;
 use futures::future::Either;
 use futures::{FutureExt, SinkExt, StreamExt};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{num::NonZeroUsize, time::Duration, time::Instant};
 
 use libp2prs_core::peerstore::{PROVIDER_ADDR_TTL, TEMP_ADDR_TTL};
@@ -35,6 +36,17 @@ use crate::{record, KadError, ALPHA_VALUE, BETA_VALUE, K_VALUE};
 use crate::kad::{KadPoster, MessengerManager};
 use crate::protocol::{KadConnectionType, KadPeer, ProtocolEvent};
 use crate::task_limit::TaskLimiter;
+
+// Internal statistics for queries running in parallel
+static NUMS_ITERATEE_QUERY: AtomicUsize = AtomicUsize::new(0);
+static NUMS_FIXED_QUERY: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn collect_query_stats() -> (usize, usize) {
+    (
+        NUMS_ITERATEE_QUERY.load(Ordering::Relaxed),
+        NUMS_FIXED_QUERY.load(Ordering::Relaxed),
+    )
+}
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -83,6 +95,7 @@ pub(crate) struct FixedQuery {
 
 impl FixedQuery {
     pub(crate) fn new(query_type: QueryType, messenger: MessengerManager, config: QueryConfig, peers: Vec<PeerId>) -> Self {
+        NUMS_FIXED_QUERY.fetch_add(1, Ordering::SeqCst);
         Self {
             messengers: messenger,
             query_type,
@@ -105,7 +118,7 @@ impl FixedQuery {
         let me = self;
         let mut limiter = TaskLimiter::new(me.config.alpha_value);
         task::spawn(async move {
-            for peer in me.peers {
+            for peer in me.peers.clone() {
                 // let record = record.clone();
                 let mut messengers = me.messengers.clone();
                 let qt = me.query_type.clone();
@@ -137,6 +150,12 @@ impl FixedQuery {
             log::info!("data announced to total {} peers", c);
             f(Ok(()))
         });
+    }
+}
+
+impl Drop for FixedQuery {
+    fn drop(&mut self) {
+        NUMS_FIXED_QUERY.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -389,7 +408,7 @@ pub enum QueryType {
     /// A query initiated by [`Kademlia::get_record`].
     GetRecord {
         /// The quorum needed by get_record.
-        quorum_needed: usize,
+        quorum: usize,
         /// Records found locally.
         local: Option<Vec<PeerRecord>>,
     },
@@ -445,6 +464,7 @@ impl IterativeQuery {
         seeds: Vec<Key<PeerId>>,
         poster: KadPoster,
     ) -> Self {
+        NUMS_ITERATEE_QUERY.fetch_add(1, Ordering::SeqCst);
         Self {
             query_type,
             key,
@@ -545,7 +565,7 @@ impl IterativeQuery {
                             }
                         }
                     }
-                    QueryType::GetRecord { quorum_needed, .. } => {
+                    QueryType::GetRecord { quorum, .. } => {
                         if let Some(record) = record {
                             log::debug!("GetRecord: record found {:?} key={:?}", record, me.key);
 
@@ -561,7 +581,7 @@ impl IterativeQuery {
                             }
 
                             // check if we have enough records
-                            if query_results.records.as_ref().map_or(0, |r| r.len()) > quorum_needed {
+                            if query_results.records.as_ref().map_or(0, |r| r.len()) > quorum {
                                 log::info!("GetRecord: got enough records for key={:?}", me.key);
 
                                 let peers_have_value = query_results
@@ -642,7 +662,7 @@ impl IterativeQuery {
             QueryType::GetProviders { count: _, local } => {
                 query_results.providers = local.take();
             }
-            QueryType::GetRecord { quorum_needed: _, local } => {
+            QueryType::GetRecord { quorum: _, local } => {
                 query_results.records = local.take();
             }
             _ => {}
@@ -661,7 +681,6 @@ impl IterativeQuery {
 
         // a runtime for query
         let query = async move {
-
             let seeds = me
                 .seeds
                 .iter()
@@ -769,7 +788,7 @@ impl IterativeQuery {
             me.stats.duration = Instant::now().duration_since(start);
 
             // send the statistics back to the Kad main loop
-            let _ = me.poster.post(ProtocolEvent::IterativeQueryCompleted(me.stats)).await;
+            let _ = me.poster.post(ProtocolEvent::IterativeQueryCompleted(me.stats.clone())).await;
 
             Ok(query_results)
         };
@@ -781,6 +800,12 @@ impl IterativeQuery {
                 Either::Right((_, _)) => f(Err(KadError::Timeout)),
             }
         });
+    }
+}
+
+impl Drop for IterativeQuery {
+    fn drop(&mut self) {
+        NUMS_ITERATEE_QUERY.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
