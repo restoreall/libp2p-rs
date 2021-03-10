@@ -35,6 +35,12 @@ pub fn swarm_cli_commands<'a>() -> Command<'a> {
         .subcommand(Command::new("close").about("close swarm").usage("close").action(cli_close_swarm))
         .subcommand(Command::new("id").about("show id information").usage("id").action(cli_show_id))
         .subcommand(
+            Command::new_with_alias("stats", "st")
+                .about("dump statistics")
+                .usage("stats")
+                .action(cli_dump_statistics),
+        )
+        .subcommand(
             Command::new_with_alias("connection", "con")
                 .about("display connection information")
                 .usage("connection [PeerId]")
@@ -92,6 +98,17 @@ fn cli_close_swarm(app: &App, _args: &[&str]) -> XcliResult {
     let mut swarm = handler(app);
 
     swarm.close();
+    Ok(CmdExeCode::Ok)
+}
+
+fn cli_dump_statistics(app: &App, _args: &[&str]) -> XcliResult {
+    let mut swarm = handler(app);
+
+    task::block_on(async {
+        let stats = swarm.dump_statistics().await.unwrap();
+        println!("{:?}", stats);
+    });
+
     Ok(CmdExeCode::Ok)
 }
 

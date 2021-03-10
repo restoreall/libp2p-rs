@@ -81,9 +81,9 @@ use libp2prs_core::{
 };
 use libp2prs_runtime::task;
 
-use crate::connection::{Connection, ConnectionId, ConnectionLimit, ConnectionView, Direction};
+use crate::connection::{Connection, ConnectionId, ConnectionView, Direction};
 use crate::control::{DumpCommand, SwarmControlCmd};
-use crate::dial::EitherDialAddr;
+use crate::dial::{DialerStatsView, EitherDialAddr};
 use crate::identify::{IdentifyConfig, IdentifyHandler, IdentifyInfo, IdentifyPushHandler};
 use crate::metrics::metric::Metric;
 use crate::muxer::Muxer;
@@ -215,6 +215,12 @@ impl Transports {
     pub(crate) fn add(&mut self, id: u32, transport: ITransportEx) -> Option<ITransportEx> {
         self.inner.insert(id, transport)
     }
+}
+
+/// Statistics of Swarm.
+#[derive(Debug)]
+pub struct SwarmStats {
+    dialer: DialerStatsView,
 }
 
 /// The post-processing callback for Dialer.
@@ -542,6 +548,11 @@ impl Swarm {
                         let _ = reply.send(r);
                     });
                 }
+                DumpCommand::Statistics(reply) => {
+                    let _ = self.on_retrieve_statistics(|r| {
+                        let _ = reply.send(r);
+                    });
+                }
             },
         }
         Ok(())
@@ -651,6 +662,11 @@ impl Swarm {
         f(self.get_substream_views(pid));
         Ok(())
     }
+    /// Retrieves the statistics.
+    fn on_retrieve_statistics(&mut self, f: impl FnOnce(Result<SwarmStats>)) -> Result<()> {
+        f(self.get_stats());
+        Ok(())
+    }
     /// Starts Swarm background runtime
     /// handling the internal events and external controls
     pub fn start(self) {
@@ -719,6 +735,11 @@ impl Swarm {
         } else {
             Err(SwarmError::NoConnection(peer_id))
         }
+    }
+    /// Returns the statistics of the `Swarm`.
+    fn get_stats(&self) -> Result<SwarmStats> {
+        let dialer = self.dialer.stats();
+        Ok(SwarmStats { dialer })
     }
     /// Returns network information about the `Swarm`.
     fn get_network_info(&self) -> NetworkInfo {
@@ -1247,7 +1268,7 @@ impl Swarm {
                     }
                 }
                 Err(err) => {
-                    log::info!("identify failed {:?} for {:?}", err, connection);
+                    log::debug!("identify failed {:?} for {:?}", err, connection);
                 }
             }
         }
@@ -1289,10 +1310,6 @@ impl Swarm {
 /// The possible failures of [`Swarm`].
 #[derive(Debug)]
 pub enum SwarmError {
-    /// The configured limit for simultaneous outgoing connections
-    /// has been reached.
-    ConnectionLimit(ConnectionLimit),
-
     /// Returned no addresses for the peer to dial.
     NoAddresses(PeerId),
 
@@ -1324,10 +1341,13 @@ pub enum SwarmError {
     ///ErrDialToSelf is returned if we attempt to dial our own peer
     DialToSelf,
 
-    ///been dialed too frequently
+    /// Dialed too frequently
     DialBackoff,
 
-    ///AllDialsFailed is returned when connecting to a peer has ultimately failed
+    /// No suitable transport found for a given peer to dial.
+    DialNoTransport(PeerId),
+
+    /// AllDialsFailed is returned when connecting to a peer has ultimately failed
     AllDialsFailed,
 
     ///dial timeout
@@ -1344,7 +1364,6 @@ pub enum SwarmError {
 impl fmt::Display for SwarmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SwarmError::ConnectionLimit(err) => write!(f, "Swarm Dial error: {}", err),
             SwarmError::NoAddresses(peer_id) => write!(f, "Swarm Dial error: no addresses for peer{:?}.", peer_id),
             SwarmError::NoConnection(peer_id) => write!(f, "Swarm Stream error: no connections for peer{:?}.", peer_id),
             SwarmError::InvalidPeerId(peer_id) => write!(f, "Swarm Dial error: invalid peer id{:?}.", peer_id),
@@ -1353,9 +1372,10 @@ impl fmt::Display for SwarmError {
             SwarmError::General(text) => write!(f, "Swarm general error: {}.", text),
             SwarmError::Closing(s) => write!(f, "Swarm channel closed source={}.", s),
             SwarmError::CanNotListenOnAny => write!(f, "Failed to listen on any addresses"),
-            SwarmError::DialToSelf => write!(f, "Swarm Dial error:dial to self attempted"),
-            SwarmError::DialBackoff => write!(f, "Swarm Dial error:dial backoff"),
-            SwarmError::AllDialsFailed => write!(f, "Swarm Dial error:all dials failed"),
+            SwarmError::DialToSelf => write!(f, "Swarm Dial error: dial to self attempted"),
+            SwarmError::DialNoTransport(peer_id) => write!(f, "Swarm Dial error: No suitable transport found for dialing {}", peer_id),
+            SwarmError::DialBackoff => write!(f, "Swarm Dial error: dial backoff"),
+            SwarmError::AllDialsFailed => write!(f, "Swarm Dial error: all dials failed"),
             SwarmError::DialTimeout(ma, t) => write!(f, "Swarm Dial error:dial timeout, addr={:?},timeout={:?}", ma, Duration::from_secs(*t)),
             SwarmError::MaxDialAttempts(c) => write!(f, "Swarm Dial error:max dial attempts exceeded, count={}", c),
             SwarmError::ConcurrentDialLimit(c) => write!(f, "Swarm Dial error:max concurrent dial exceeded, count={}", c),
@@ -1366,7 +1386,6 @@ impl fmt::Display for SwarmError {
 impl error::Error for SwarmError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            SwarmError::ConnectionLimit(err) => Some(err),
             SwarmError::NoAddresses(_) => None,
             SwarmError::NoConnection(_) => None,
             SwarmError::InvalidPeerId(_) => None,
@@ -1376,6 +1395,7 @@ impl error::Error for SwarmError {
             SwarmError::Closing(_) => None,
             SwarmError::CanNotListenOnAny => None,
             SwarmError::DialToSelf => None,
+            SwarmError::DialNoTransport(_) => None,
             SwarmError::DialBackoff => None,
             SwarmError::AllDialsFailed => None,
             SwarmError::DialTimeout(_, _) => None,

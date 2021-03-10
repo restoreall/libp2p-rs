@@ -48,7 +48,6 @@ use crate::store::RecordStore;
 use crate::{kbucket, record, KadError, ProviderRecord, Record};
 use libp2prs_core::peerstore::{ADDRESS_TTL, PROVIDER_ADDR_TTL};
 use libp2prs_swarm::protocol_handler::{IProtocolHandler, ProtocolImpl};
-use std::sync::atomic::Ordering;
 
 type Result<T> = std::result::Result<T, KadError>;
 
