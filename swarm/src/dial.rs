@@ -588,7 +588,7 @@ impl AsyncDialer {
                         // return here, ignore the rest of jobs
                         return Ok(stream_muxer);
                     } else {
-                        log::info!(
+                        log::debug!(
                             "[Dialer] job failed due to peer id mismatch conn={:?} wanted={:?} got={:?}",
                             stream_muxer,
                             peer_id,
