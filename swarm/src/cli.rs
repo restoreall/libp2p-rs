@@ -41,7 +41,7 @@ pub fn swarm_cli_commands<'a>() -> Command<'a> {
                 .action(cli_dump_statistics),
         )
         .subcommand(
-            Command::new_with_alias("connection", "con")
+            Command::new_with_alias("connection", "lc")
                 .about("display connection information")
                 .usage("connection [PeerId]")
                 .action(cli_show_connections),
@@ -53,10 +53,16 @@ pub fn swarm_cli_commands<'a>() -> Command<'a> {
                 .action(cli_show_peers),
         )
         .subcommand(
-            Command::new_with_alias("connect", "c")
+            Command::new_with_alias("connect", "con")
                 .about("connect to a peer")
                 .usage("connect <PeerId> [Multiaddr]")
                 .action(cli_connect),
+        )
+        .subcommand(
+            Command::new_with_alias("disconnect", "disc")
+                .about("disconnect a peer")
+                .usage("disconnect <PeerId>")
+                .action(cli_disconnect),
         )
 }
 
@@ -106,7 +112,8 @@ fn cli_dump_statistics(app: &App, _args: &[&str]) -> XcliResult {
 
     task::block_on(async {
         let stats = swarm.dump_statistics().await.unwrap();
-        println!("{:?}", stats);
+        println!("{:?}", stats.dialer);
+        println!("{:?}", stats.listener);
     });
 
     Ok(CmdExeCode::Ok)
@@ -123,11 +130,11 @@ fn cli_show_connections(app: &App, args: &[&str]) -> XcliResult {
 
     task::block_on(async {
         let connections = swarm.dump_connections(peer).await.unwrap();
-        println!("CID   DIR Remote-Peer-Id                                       I/O  Remote-Multiaddr");
+        println!("CID   DIR Remote-Peer-Id                                       I/O  Local-Multiaddr  Remote-Multiaddr");
         connections.iter().for_each(|v| {
             println!(
-                "{} {} {:52} {}/{}  {}",
-                v.id, v.dir, v.info.remote_peer_id, v.info.num_inbound_streams, v.info.num_outbound_streams, v.info.ra
+                "{} {} {:52} {}/{}  {} {}",
+                v.id, v.dir, v.info.remote_peer_id, v.info.num_inbound_streams, v.info.num_outbound_streams, v.info.la, v.info.ra
             );
             if true {
                 v.substreams.iter().for_each(|s| {
@@ -175,6 +182,23 @@ fn cli_connect(app: &App, args: &[&str]) -> XcliResult {
     task::block_on(async {
         let r = swarm.new_connection(peer_id).await;
         println!("Connecting to {}: {:?}", peer_id, r);
+    });
+
+    Ok(CmdExeCode::Ok)
+}
+
+fn cli_disconnect(app: &App, args: &[&str]) -> XcliResult {
+    let mut swarm = handler(app);
+
+    let peer_id = if args.len() == 1 {
+        PeerId::from_str(args[0]).map_err(|e| XcliError::BadArgument(e.to_string()))?
+    } else {
+        return Err(XcliError::MismatchArgument(1, args.len()));
+    };
+
+    task::block_on(async {
+        let r = swarm.disconnect(peer_id).await;
+        println!("Disconnecting {}: {:?}", peer_id, r);
     });
 
     Ok(CmdExeCode::Ok)

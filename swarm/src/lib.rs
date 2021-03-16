@@ -67,7 +67,7 @@ use futures::future::Either;
 use futures::prelude::*;
 use smallvec::SmallVec;
 use std::collections::HashSet;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{error, fmt};
@@ -221,6 +221,29 @@ impl Transports {
 #[derive(Debug)]
 pub struct SwarmStats {
     dialer: DialerStatsView,
+    listener: ListenerStatsView,
+}
+
+/// Statistics of listener.
+#[derive(Default)]
+struct ListenerStats {
+    total_connecton: AtomicUsize,
+    total_error: AtomicUsize,
+}
+
+#[derive(Debug)]
+pub struct ListenerStatsView {
+    total_connecton: usize,
+    total_error: usize,
+}
+
+impl From<&ListenerStats> for ListenerStatsView {
+    fn from(s: &ListenerStats) -> Self {
+        Self {
+            total_connecton: s.total_connecton.load(Ordering::Relaxed),
+            total_error: s.total_error.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// The post-processing callback for Dialer.
@@ -256,6 +279,9 @@ pub struct Swarm {
 
     /// The next listener ID to assign.
     next_connection_id: usize,
+
+    /// The listener statistics.
+    listener_stats: Arc<ListenerStats>,
 
     /// List of multiaddresses we're listening on.
     listened_addrs: SmallVec<[Multiaddr; 8]>,
@@ -326,6 +352,7 @@ impl Swarm {
             public_key: key.clone(),
             local_peer_id: key.into_peer_id(),
             next_connection_id: 0,
+            listener_stats: Default::default(),
             listened_addrs: Default::default(),
             external_addrs: Default::default(),
             banned_peers: Default::default(),
@@ -739,7 +766,8 @@ impl Swarm {
     /// Returns the statistics of the `Swarm`.
     fn get_stats(&self) -> Result<SwarmStats> {
         let dialer = self.dialer.stats();
-        Ok(SwarmStats { dialer })
+        let listener = self.listener_stats.as_ref().into();
+        Ok(SwarmStats { dialer, listener })
     }
     /// Returns network information about the `Swarm`.
     fn get_network_info(&self) -> NetworkInfo {
@@ -823,6 +851,7 @@ impl Swarm {
         let mut tx = self.event_sender.clone();
         // start a runtime for this listener
         // TODO: remember the runtime handle of this listener, so that we can 'cancel' it when exiting
+        let stats = self.listener_stats.clone();
         task::spawn(async move {
             loop {
                 let r = listener.accept().await;
@@ -837,6 +866,7 @@ impl Swarm {
                         // don't have to verify if remote peer id matches its public key
                         // always accept any incoming connection
                         // send muxer back to Swarm main runtime
+                        stats.total_connecton.fetch_add(1, Ordering::SeqCst);
                         let _ = tx
                             .send(SwarmEvent::ConnectionEstablished {
                                 stream_muxer: muxer,
@@ -846,6 +876,7 @@ impl Swarm {
                             .await;
                     }
                     Err(err) => {
+                        stats.total_error.fetch_add(1, Ordering::SeqCst);
                         let _ = tx
                             .send(SwarmEvent::IncomingConnectionError {
                                 remote_addr: Multiaddr::empty(),
@@ -1139,7 +1170,6 @@ impl Swarm {
         let callback = self.dial_transactions.remove(&tid).expect("no match tid found");
         callback(Err(error));
 
-        // TODO: add statistics
         Ok(())
     }
 

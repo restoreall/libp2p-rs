@@ -66,9 +66,6 @@ const BACKOFF_COEF: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(300);
 
 /// Statistics of dialer.
-// #[derive(Clone)]
-// struct DialerStats(Arc<DialerStatsInner>);
-
 #[derive(Default)]
 struct DialerStats {
     total_attempts: AtomicUsize,
