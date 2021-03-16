@@ -222,14 +222,16 @@ impl Transports {
 /// Statistics of Swarm connection and stream.
 #[derive(Default, Clone, Debug)]
 pub struct SwarmBaseStats {
-    connection_opened: usize,
+    connection_incoming_opened: usize,
+    connection_outgoing_opened: usize,
     connection_closed: usize,
     incoming_connection_error: usize,
     outgoing_connection_error: usize,
-    substream_opened: usize,
+    substream_inbound_opened: usize,
+    substream_outbound_opened: usize,
     substream_closed: usize,
-    inbound_substream_error: usize,
-    outbound_substream_error: usize,
+    substream_inbound_error: usize,
+    substream_outbound_error: usize,
 }
 
 /// Statistics of Swarm.
@@ -1061,7 +1063,11 @@ impl Swarm {
         log::debug!("handle_connection_opened: {:?} {:?}", stream_muxer, dir);
 
         // update base statistics
-        self.base_stats.connection_opened += 1;
+        if dir == Direction::Inbound {
+            self.base_stats.connection_incoming_opened += 1;
+        } else {
+            self.base_stats.connection_outgoing_opened += 1;
+        }
 
         // add local pubkey to keybook
         // self.peer_store.add_key(&self.local_peer_id, stream_muxer.local_priv_key().public());
@@ -1215,7 +1221,11 @@ impl Swarm {
         log::debug!("handle_stream_opened: {:?}", view);
 
         // update base statistics
-        self.base_stats.substream_opened += 1;
+        if view.dir == Direction::Inbound {
+            self.base_stats.substream_inbound_opened += 1;
+        } else {
+            self.base_stats.substream_outbound_opened += 1;
+        }
 
         // add stream id to the connection substream list
         if let Some(c) = self.connections_by_id.get_mut(&view.cid) {
@@ -1244,9 +1254,9 @@ impl Swarm {
 
         // update base statistics
         if dir == Direction::Outbound {
-            self.base_stats.outbound_substream_error += 1;
+            self.base_stats.substream_outbound_error += 1;
         } else {
-            self.base_stats.inbound_substream_error += 1;
+            self.base_stats.substream_inbound_error += 1;
         }
 
         Ok(())
