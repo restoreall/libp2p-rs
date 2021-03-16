@@ -112,6 +112,7 @@ fn cli_dump_statistics(app: &App, _args: &[&str]) -> XcliResult {
 
     task::block_on(async {
         let stats = swarm.dump_statistics().await.unwrap();
+        println!("{:?}", stats.base);
         println!("{:?}", stats.dialer);
         println!("{:?}", stats.listener);
     });

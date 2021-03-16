@@ -213,6 +213,7 @@ impl Connection {
                 }
                 Err(_) => SwarmEvent::StreamError {
                     cid,
+                    dir: Direction::Outbound,
                     error: TransportError::Internal,
                 },
             };
@@ -345,7 +346,15 @@ impl Connection {
                     }
                     Err(err) => {
                         // looks like the peer doesn't support the protocol
-                        log::info!("Ping protocol not supported: {:?}", err);
+                        log::info!("Ping protocol not supported: {:?} {:?}", cid, err);
+                        let _ = tx
+                            .send(SwarmEvent::StreamError {
+                                cid,
+                                dir: Direction::Outbound,
+                                error: TransportError::Internal,
+                            })
+                            .await;
+
                         Err(err)
                     }
                 };
@@ -397,7 +406,15 @@ impl Connection {
                 }
                 Err(err) => {
                     // looks like the peer doesn't support the protocol
-                    log::debug!("Identify protocol not supported: {:?}", err);
+                    log::info!("Identify protocol not supported: {:?} {:?}", cid, err);
+                    let _ = tx
+                        .send(SwarmEvent::StreamError {
+                            cid,
+                            dir: Direction::Outbound,
+                            error: TransportError::Internal,
+                        })
+                        .await;
+
                     Err(err)
                 }
             };
@@ -450,8 +467,14 @@ impl Connection {
                 }
                 Err(err) => {
                     // looks like the peer doesn't support the protocol
-                    log::info!("Identify push protocol not supported: {:?}", err);
-                    //Err(err)
+                    log::info!("Identify push protocol not supported: {:?} {:?}", cid, err);
+                    let _ = tx
+                        .send(SwarmEvent::StreamError {
+                            cid,
+                            dir: Direction::Outbound,
+                            error: TransportError::Internal,
+                        })
+                        .await;
                 }
             }
 

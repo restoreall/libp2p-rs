@@ -130,6 +130,8 @@ pub enum SwarmEvent {
     StreamError {
         /// The connection Id of the sub stream.
         cid: ConnectionId,
+        /// Direction of the requested stream.
+        dir: Direction,
         /// The cause of the error.
         error: TransportError,
     },
@@ -217,9 +219,23 @@ impl Transports {
     }
 }
 
+/// Statistics of Swarm connection and stream.
+#[derive(Default, Clone, Debug)]
+pub struct SwarmBaseStats {
+    connection_opened: usize,
+    connection_closed: usize,
+    incoming_connection_error: usize,
+    outgoing_connection_error: usize,
+    substream_opened: usize,
+    substream_closed: usize,
+    inbound_substream_error: usize,
+    outbound_substream_error: usize,
+}
+
 /// Statistics of Swarm.
 #[derive(Debug)]
 pub struct SwarmStats {
+    base: SwarmBaseStats,
     dialer: DialerStatsView,
     listener: ListenerStatsView,
 }
@@ -279,6 +295,9 @@ pub struct Swarm {
 
     /// The next listener ID to assign.
     next_connection_id: usize,
+
+    /// The basic statistics of Swarm.
+    base_stats: SwarmBaseStats,
 
     /// The listener statistics.
     listener_stats: Arc<ListenerStats>,
@@ -352,6 +371,7 @@ impl Swarm {
             public_key: key.clone(),
             local_peer_id: key.into_peer_id(),
             next_connection_id: 0,
+            base_stats: Default::default(),
             listener_stats: Default::default(),
             listened_addrs: Default::default(),
             external_addrs: Default::default(),
@@ -502,13 +522,13 @@ impl Swarm {
                 let _ = self.handle_connection_closed(cid);
             }
             SwarmEvent::OutgoingConnectionError { tid, peer_id, error } => {
-                let _ = self.handle_connection_error(peer_id, error, tid);
+                let _ = self.handle_outgoing_connection_error(peer_id, error, tid);
             }
             SwarmEvent::IncomingConnectionError { remote_addr, error } => {
-                log::debug!("incoming connection error for {:?} {:?}", remote_addr, error);
+                let _ = self.handle_incoming_connection_error(remote_addr, error);
             }
-            SwarmEvent::StreamError { .. } => {
-                // TODO: add statistics
+            SwarmEvent::StreamError { cid, dir, .. } => {
+                let _ = self.handle_stream_error(cid, dir);
             }
             SwarmEvent::StreamOpened { view } => {
                 let _ = self.handle_stream_opened(view);
@@ -767,7 +787,8 @@ impl Swarm {
     fn get_stats(&self) -> Result<SwarmStats> {
         let dialer = self.dialer.stats();
         let listener = self.listener_stats.as_ref().into();
-        Ok(SwarmStats { dialer, listener })
+        let base = self.base_stats.clone();
+        Ok(SwarmStats { base, dialer, listener })
     }
     /// Returns network information about the `Swarm`.
     fn get_network_info(&self) -> NetworkInfo {
@@ -1039,7 +1060,8 @@ impl Swarm {
     fn handle_connection_opened(&mut self, stream_muxer: IStreamMuxer, dir: Direction, tid: Option<TransactionId>) -> Result<()> {
         log::debug!("handle_connection_opened: {:?} {:?}", stream_muxer, dir);
 
-        let metric = self.metric.clone();
+        // update base statistics
+        self.base_stats.connection_opened += 1;
 
         // add local pubkey to keybook
         // self.peer_store.add_key(&self.local_peer_id, stream_muxer.local_priv_key().public());
@@ -1051,7 +1073,7 @@ impl Swarm {
             dir,
             self.event_sender.clone(),
             self.ctrl_sender.clone(),
-            metric.clone(),
+            self.metric.clone(),
         );
         // TODO: filtering the multiaddr, Err = AddrFiltered(addr)
 
@@ -1072,6 +1094,7 @@ impl Swarm {
 
         let mut tx = self.event_sender.clone();
         let cid = connection.id();
+        let metric = self.metric.clone();
         // clone muxer and move it into the runtime
         let mut muxer = self.muxer.clone();
         let ctrl = self.ctrl_sender.clone();
@@ -1115,7 +1138,7 @@ impl Swarm {
                             }
                             Err(error) => {
                                 log::debug!("failed inbound protocol selection {:?} {:?}", cid, error);
-                                let _ = tx.send(SwarmEvent::StreamError { cid, error }).await;
+                                let _ = tx.send(SwarmEvent::StreamError { cid, dir, error }).await;
                             }
                         }
                     }
@@ -1161,10 +1184,22 @@ impl Swarm {
 
         Ok(())
     }
+    /// Handles outgoing connection error.
+    fn handle_incoming_connection_error(&mut self, remote_addr: Multiaddr, error: TransportError) -> Result<()> {
+        log::debug!("incoming connection error for {:?} {:?}", remote_addr, error);
+
+        // update base statistics
+        self.base_stats.incoming_connection_error += 1;
+
+        Ok(())
+    }
 
     /// Handles outgoing connection error.
-    fn handle_connection_error(&mut self, peer_id: PeerId, error: SwarmError, tid: TransactionId) -> Result<()> {
-        log::debug!("handle_connection_error: {:?} {:?} tid={:?}", peer_id, error, tid);
+    fn handle_outgoing_connection_error(&mut self, peer_id: PeerId, error: SwarmError, tid: TransactionId) -> Result<()> {
+        log::debug!("outgoing connection error: {:?} {:?} tid={:?}", peer_id, error, tid);
+
+        // update base statistics
+        self.base_stats.outgoing_connection_error += 1;
 
         //execute dial callback for post processing
         let callback = self.dial_transactions.remove(&tid).expect("no match tid found");
@@ -1178,6 +1213,10 @@ impl Swarm {
     /// Use channel to received message that sent by another runtime
     fn handle_stream_opened(&mut self, view: SubstreamView) -> Result<()> {
         log::debug!("handle_stream_opened: {:?}", view);
+
+        // update base statistics
+        self.base_stats.substream_opened += 1;
+
         // add stream id to the connection substream list
         if let Some(c) = self.connections_by_id.get_mut(&view.cid) {
             c.add_stream(view)
@@ -1185,13 +1224,31 @@ impl Swarm {
         Ok(())
     }
 
-    /// Handles closing stream
+    /// Handles closing stream.
     fn handle_stream_closed(&mut self, cid: ConnectionId, sid: StreamId) -> Result<()> {
         log::debug!("handle_stream_closed: {:?}/{:?}", cid, sid);
+
+        // update base statistics
+        self.base_stats.substream_closed += 1;
+
         // delete sub-stream from the connection substream list
         if let Some(c) = self.connections_by_id.get_mut(&cid) {
             c.del_stream(sid)
         }
+        Ok(())
+    }
+
+    /// Handles stream error.
+    fn handle_stream_error(&mut self, cid: ConnectionId, dir: Direction) -> Result<()> {
+        log::debug!("handle_stream_error: {:?}", cid);
+
+        // update base statistics
+        if dir == Direction::Outbound {
+            self.base_stats.outbound_substream_error += 1;
+        } else {
+            self.base_stats.inbound_substream_error += 1;
+        }
+
         Ok(())
     }
 
@@ -1200,6 +1257,9 @@ impl Swarm {
     /// start a Task for accepting new sub-stream from the connection
     fn handle_connection_closed(&mut self, cid: ConnectionId) -> Result<()> {
         log::debug!("handle_connection_closed: {:?}", cid);
+
+        // update base statistics
+        self.base_stats.connection_closed += 1;
 
         // try to retrieve the Connection by looking up 'connections_by_id'
         if let Some(mut connection) = self.connections_by_id.remove(&cid) {
