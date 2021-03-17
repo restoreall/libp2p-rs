@@ -195,6 +195,8 @@ impl FixedQuery {
     where
         F: FnOnce(Result<()>) + Send + 'static,
     {
+        log::debug!("run fixed query {:?}", self.query_type);
+
         // check for empty fixed peers
         if self.peers.is_empty() {
             log::info!("no fixed peers, abort running");
