@@ -112,6 +112,7 @@ use std::fmt;
 use std::pin::Pin;
 use std::time::Duration;
 use stream::{State, Stream};
+use crate::connection::ControlCommand::AcceptStream;
 
 /// `Control` to `Connection` commands.
 #[derive(Debug)]
@@ -370,8 +371,10 @@ impl<T: SplittableReadWrite> Connection<T> {
 
                 log::debug!("{}: new inbound {} of {}", self.id, stream, self);
                 if let Some(sender) = self.waiting_stream_sender.take() {
+                    log::debug!("Taking waiting stream sender");
                     sender.send(Ok(stream)).expect("send err");
                 } else {
+                    log::debug!("Push stream to pending_streams");
                     self.pending_streams.push_back(stream);
                 }
             }
@@ -391,7 +394,9 @@ impl<T: SplittableReadWrite> Connection<T> {
                 // If stream is closed, ignore frame
                 if let Some(sender) = self.streams.get_mut(&stream_id) {
                     if !sender.is_closed() {
+                        log::debug!("Sender doesn't closed");
                         let sender = sender.send(frame.body());
+                        log::debug!("Sender send finished");
                         if send_channel_timeout(sender, RECEIVE_TIMEOUT).await.is_err() {
                             // reset stream
                             log::debug!("stream {} send timeout, Reset it", stream_id);
@@ -412,6 +417,7 @@ impl<T: SplittableReadWrite> Connection<T> {
                     self.streams.remove(&stream_id);
                     self.streams_stat.remove(&stream_id);
                 }
+                log::debug!("Message finished");
             }
             Tag::Close => {
                 let stream_id = frame.header().stream_id();
@@ -480,6 +486,7 @@ impl<T: SplittableReadWrite> Connection<T> {
                 if rm {
                     self.streams_stat.remove(&stream_id);
                 }
+                log::debug!("Async closed finished");
                 let _ = reply.send(());
             }
             Some(StreamCommand::ResetStream(frame, reply)) => {

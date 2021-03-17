@@ -30,7 +30,7 @@ use libp2prs_core::{Multiaddr, PeerId};
 use crate::kad::{KBucketView, KademliaStats};
 use crate::protocol::{KadMessengerView, KadPeer};
 use crate::query::PeerRecord;
-use crate::{record, KadError};
+use crate::{record, KadError, ProviderRecord, Record};
 
 type Result<T> = std::result::Result<T, KadError>;
 
@@ -72,7 +72,7 @@ pub(crate) enum ControlCommand {
 #[derive(Debug)]
 pub enum DumpCommand {
     /// Dump the Providers in the local storage.
-    Storage(oneshot::Sender<()>),
+    Storage(oneshot::Sender<(Vec<ProviderRecord>, Vec<Record>)>),
     /// Dump the Kad DHT kbuckets. Empty kbucket will be ignored.
     Entries(oneshot::Sender<Vec<KBucketView>>),
     /// Dump the Kad statistics.
@@ -106,7 +106,7 @@ impl Control {
         let _ = self.control_sender.send(ControlCommand::RemoveNode(peer_id)).await;
     }
 
-    pub async fn dump_storage(&mut self) -> Result<()> {
+    pub async fn dump_storage(&mut self) -> Result<(Vec<ProviderRecord>, Vec<Record>)> {
         let (tx, rx) = oneshot::channel();
         self.control_sender.send(ControlCommand::Dump(DumpCommand::Storage(tx))).await?;
         Ok(rx.await?)

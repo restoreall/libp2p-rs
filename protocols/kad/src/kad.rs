@@ -376,8 +376,8 @@ impl KadPoster {
 }
 
 impl<TStore> Kademlia<TStore>
-where
-    for<'a> TStore: RecordStore<'a> + Send + 'static,
+    where
+            for<'a> TStore: RecordStore<'a> + Send + 'static,
 {
     /// Creates a new `Kademlia` network behaviour with a default configuration.
     pub fn new(id: PeerId, store: TStore) -> Self {
@@ -666,7 +666,7 @@ where
     }
 
     /// Returns an iterator over all non-empty buckets in the routing table.
-    fn kbuckets(&mut self) -> impl Iterator<Item = kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>> {
+    fn kbuckets(&mut self) -> impl Iterator<Item=kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>> {
         self.kbuckets.iter().filter(|b| !b.is_empty())
     }
 
@@ -674,8 +674,8 @@ where
     ///
     /// Returns `None` if the given key refers to the local key.
     pub fn kbucket<K>(&mut self, key: K) -> Option<kbucket::KBucketRef<'_, kbucket::Key<PeerId>, PeerInfo>>
-    where
-        K: Borrow<[u8]> + Clone,
+        where
+            K: Borrow<[u8]> + Clone,
     {
         self.kbuckets.bucket(&kbucket::Key::new(key))
     }
@@ -711,8 +711,8 @@ where
 
     /// Initiates an iterative lookup for the closest peers to the given key.
     fn get_closest_peers<F>(&mut self, key: record::Key, f: F)
-    where
-        F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static,
+        where
+            F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static,
     {
         let q = self.prepare_iterative_query(QueryType::GetClosestPeers, key);
 
@@ -726,8 +726,8 @@ where
     /// The result of this operation is delivered into the callback
     /// Fn(Result<Option<KadPeer>>).
     fn find_peer<F>(&mut self, key: record::Key, f: F)
-    where
-        F: FnOnce(Result<KadPeer>) + Send + 'static,
+        where
+            F: FnOnce(Result<KadPeer>) + Send + 'static,
     {
         let q = self.prepare_iterative_query(QueryType::FindPeer, key);
 
@@ -744,8 +744,8 @@ where
     /// The result of this operation is delivered into the callback
     /// Fn(Result<Vec<KadPeer>>).
     fn get_providers<F>(&mut self, key: record::Key, count: usize, f: F)
-    where
-        F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static,
+        where
+            F: FnOnce(Result<Vec<KadPeer>>) + Send + 'static,
     {
         let provider_peers = self.provider_peers(&key, None);
 
@@ -767,8 +767,8 @@ where
     /// The result of this operation is delivered into the callback
     /// Fn(Result<Vec<PeerRecord>>).
     fn get_record<F>(&mut self, key: record::Key, f: F)
-    where
-        F: FnOnce(Result<PeerRecord>) + Send + 'static,
+        where
+            F: FnOnce(Result<PeerRecord>) + Send + 'static,
     {
         let quorum = self.query_config.k_value.get();
         let mut records = Vec::with_capacity(quorum);
@@ -830,8 +830,8 @@ where
     /// The result of this operation is delivered into the callback
     /// Fn(Result<()>).
     fn put_record<F>(&mut self, key: record::Key, value: Vec<u8>, f: F)
-    where
-        F: FnOnce(Result<()>) + Send + 'static,
+        where
+            F: FnOnce(Result<()>) + Send + 'static,
     {
         // TODO: probably we should check if there is a old record with the same key?
 
@@ -927,8 +927,10 @@ where
     }
 
     // TODO:
-    fn dump_storage(&mut self) -> () {
-        ()
+    fn dump_storage(&mut self) -> (Vec<ProviderRecord>, Vec<Record>) {
+        let provide_iter = self.store.provided().map(|item| item.into_owned()).collect();
+        let record_iter = self.store.records().map(|item| item.into_owned()).collect();
+        (provide_iter, record_iter)
     }
 
     fn dump_kbuckets(&mut self) -> Vec<KBucketView> {
@@ -984,8 +986,8 @@ where
     /// The result of this operation is delivered into the callback
     /// Fn(Result<()>).
     fn start_providing<F>(&mut self, key: record::Key, f: F)
-    where
-        F: FnOnce(Result<()>) + Send + 'static,
+        where
+            F: FnOnce(Result<()>) + Send + 'static,
     {
         let provider = ProviderRecord::new(key.clone(), *self.kbuckets.self_key().preimage(), None);
         if let Err(e) = self.store.add_provider(provider.clone()) {
@@ -1082,7 +1084,7 @@ where
                     } else {
                         swarm.get_addrs(&node_id)
                     }
-                    .unwrap_or_default();
+                        .unwrap_or_default();
 
                     Some(KadPeer {
                         node_id,
@@ -1660,16 +1662,16 @@ where
 }
 
 impl<TStore> ProtocolImpl for Kademlia<TStore>
-where
-    for<'a> TStore: RecordStore<'a> + Send + 'static,
+    where
+            for<'a> TStore: RecordStore<'a> + Send + 'static,
 {
     fn handler(&self) -> IProtocolHandler {
         Box::new(KadProtocolHandler::new(self.protocol_config.clone(), self.poster()))
     }
 
     fn start(mut self, swarm: SwarmControl) -> Option<task::TaskHandle<()>>
-    where
-        Self: Sized,
+        where
+            Self: Sized,
     {
         self.messengers = Some(MessengerManager::new(swarm.clone(), self.protocol_config.clone()));
         self.swarm = Some(swarm);
@@ -1735,9 +1737,13 @@ impl MessengerManager {
         };
 
         match r {
-            Some(sender) => Ok(sender),
+            Some(sender) => {
+                log::debug!("Sender exists");
+                Ok(sender)
+            }
             None => {
                 // make a new sender
+                log::debug!("Build a new sender");
                 KadMessenger::build(self.swarm.clone(), *peer, self.config.clone()).await
             }
         }

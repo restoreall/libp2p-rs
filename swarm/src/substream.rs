@@ -114,6 +114,7 @@ impl Drop for Substream {
             task::spawn(async move {
                 let _ = s.send(SwarmControlCmd::CloseStream(cid, sid)).await;
                 let _ = inner.close2().await;
+                log::debug!("drop finished");
             });
         }
     }

@@ -616,7 +616,7 @@ impl IterativeQuery {
                 // to PeerStore
                 for peer in closer.iter() {
                     // kingwel, we filter out all loopback addresses
-                    let addrs = peer.clone().multiaddrs;
+                    let addrs = peer.multiaddrs.iter().filter(|a| !a.is_loopback_addr()).cloned().collect();
                     me.swarm.add_addrs(&peer.node_id, addrs, TEMP_ADDR_TTL);
                 }
 

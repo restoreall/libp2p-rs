@@ -77,10 +77,14 @@ impl<TProto: AsRef<[u8]> + Clone + fmt::Debug> Negotiator<TProto> {
             return Err(ProtocolError::InvalidMessage.into());
         };
 
+        log::debug!("received message");
+
         io.send_message(Message::Header(version)).await?;
 
         loop {
             let msg = io.recv_message().await?;
+
+            log::debug!("Message: {:?}", msg);
 
             match msg {
                 Message::ListProtocols => {
@@ -124,7 +128,11 @@ impl<TProto: AsRef<[u8]> + Clone + fmt::Debug> Negotiator<TProto> {
         let version = Version::default();
         io.send_message(Message::Header(version)).await?;
 
+        log::debug!("send header");
+
         let msg = io.recv_message().await?;
+
+        log::debug!("recv msg");
         if msg != Message::Header(version) {
             return Err(ProtocolError::InvalidMessage.into());
         }
