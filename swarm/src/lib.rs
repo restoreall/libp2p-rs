@@ -634,16 +634,19 @@ impl Swarm {
     }
 
     fn on_close_connection(&mut self, peer_id: PeerId, reply: oneshot::Sender<Result<()>>) -> Result<()> {
-        if let Some(ids) = self.connections_by_peer.get(&peer_id) {
+        let r = if let Some(ids) = self.connections_by_peer.get(&peer_id) {
             // close all connections related to the peer_id
             for id in ids {
                 if let Some(c) = self.connections_by_id.get_mut(&id) {
                     c.close()
                 }
             }
-        }
+            Ok(())
+        } else {
+            Err(SwarmError::NoConnection(peer_id))
+        };
 
-        let _ = reply.send(Ok(()));
+        let _ = reply.send(r);
         Ok(())
     }
 
