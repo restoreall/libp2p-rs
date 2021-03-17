@@ -43,7 +43,7 @@ use crate::protocol::{
 
 use crate::addresses::PeerInfo;
 use crate::kbucket::KBucketsTable;
-use crate::query::{collect_query_stats, FixedQuery, IterativeQuery, PeerRecord, QueryConfig, QueryStats, QueryType};
+use crate::query::{FixedQuery, IterativeQuery, PeerRecord, QueryConfig, QueryStats, QueryStatsAtomic, QueryType};
 use crate::store::RecordStore;
 use crate::{kbucket, record, KadError, ProviderRecord, Record};
 use libp2prs_core::peerstore::{ADDRESS_TTL, PROVIDER_ADDR_TTL};
@@ -64,6 +64,9 @@ pub struct Kademlia<TStore> {
 
     /// The config for queries.
     query_config: QueryConfig,
+
+    /// The statistics of iterative and fixed queries.
+    query_stats: Arc<QueryStatsAtomic>,
 
     /// The statistics of Kad DHT.
     stats: KademliaStats,
@@ -129,10 +132,6 @@ pub struct Kademlia<TStore> {
 /// The statistics of Kademlia.
 #[derive(Debug, Clone, Default)]
 pub struct KademliaStats {
-    pub running_iterative_queries: usize,
-    pub running_fixed_queries: usize,
-    pub successful_queries: usize,
-    pub timeout_queries: usize,
     pub total_refreshes: usize,
     pub query: QueryStats,
     pub message_rx: MessageStats,
@@ -408,6 +407,7 @@ where
             protocol_config: config.protocol_config,
             refreshing: false,
             query_config: config.query_config,
+            query_stats: Arc::new(Default::default()),
             stats: Default::default(),
             messengers: None,
             connected_peers: Default::default(),
@@ -705,6 +705,7 @@ where
             self.query_config.clone(),
             seeds,
             self.poster(),
+            self.query_stats.clone(),
         )
     }
 
@@ -793,13 +794,14 @@ where
 
             let local = if records.is_empty() { None } else { Some(records) };
             let q = self.prepare_iterative_query(QueryType::GetRecord { quorum, local }, key);
+            let stats = self.query_stats.clone();
             q.run(|r| {
                 f(r.and_then(|r| {
                     let record = r.records.as_ref().map(|r| r.first().cloned());
                     if let Some(Some(record)) = record.clone() {
                         if let Some(cache_peers) = r.cache_peers {
                             let record = record.record;
-                            let fixed_query = FixedQuery::new(QueryType::PutRecord { record }, messengers, config, cache_peers);
+                            let fixed_query = FixedQuery::new(QueryType::PutRecord { record }, messengers, config, cache_peers, stats);
                             fixed_query.run(|_| {});
                         }
                     }
@@ -849,13 +851,14 @@ where
 
         let config = self.query_config.clone();
         let messengers = self.messengers.clone().expect("must be Some");
+        let stats = self.query_stats.clone();
         // initiate the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(record.key.clone(), move |peers| {
             if let Err(e) = peers {
                 f(Err(e));
             } else {
                 let peers = peers.unwrap().into_iter().map(KadPeer::into).collect::<Vec<_>>();
-                let fixed_query = FixedQuery::new(QueryType::PutRecord { record }, messengers, config, peers);
+                let fixed_query = FixedQuery::new(QueryType::PutRecord { record }, messengers, config, peers, stats);
                 fixed_query.run(f);
             }
         });
@@ -919,9 +922,7 @@ where
     }
 
     fn dump_statistics(&mut self) -> KademliaStats {
-        let c = collect_query_stats();
-        self.stats.running_iterative_queries = c.0;
-        self.stats.running_fixed_queries = c.1;
+        self.stats.query = self.query_stats.to_view();
         self.stats.clone()
     }
 
@@ -994,14 +995,14 @@ where
         let config = self.query_config.clone();
         let messengers = self.messengers.clone().expect("must be Some");
         let addresses = self.local_addrs.clone();
-
+        let stats = self.query_stats.clone();
         // initiate the iterative lookup for closest peers, which can be used to publish the record
         self.get_closest_peers(key, move |peers| {
             if let Err(e) = peers {
                 f(Err(e));
             } else {
                 let peers = peers.unwrap().into_iter().map(KadPeer::into).collect();
-                let fixed_query = FixedQuery::new(QueryType::AddProvider { provider, addresses }, messengers, config, peers);
+                let fixed_query = FixedQuery::new(QueryType::AddProvider { provider, addresses }, messengers, config, peers, stats);
                 fixed_query.run(f);
             }
         });
@@ -1308,22 +1309,6 @@ where
         self.try_remove_peer(peer_id, false);
     }
 
-    // handle iterative query completion
-    fn handle_query_stats(&mut self, stats: QueryStats) {
-        log::info!("iterative query report : {:?}", stats);
-
-        // calculate the average duration...
-        let total = self.stats.query.duration * self.stats.successful_queries as u32 + stats.duration;
-        self.stats.successful_queries += 1;
-        self.stats.query.duration = total / self.stats.successful_queries as u32;
-        self.stats.query.merge(stats);
-    }
-
-    // handle iterative query timeout
-    fn handle_query_timeout(&mut self) {
-        self.stats.timeout_queries += 1;
-    }
-
     // Handle Kad events sent from protocol handler.
     fn on_events(&mut self, msg: Option<ProtocolEvent>) -> Result<()> {
         log::debug!("handle kad event: {:?}", msg);
@@ -1345,12 +1330,6 @@ where
             }
             Some(ProtocolEvent::KadPeerStopped(peer_id)) => {
                 self.handle_peer_stopped(peer_id);
-            }
-            Some(ProtocolEvent::IterativeQueryCompleted(stats)) => {
-                self.handle_query_stats(stats);
-            }
-            Some(ProtocolEvent::IterativeQueryTimeout) => {
-                self.handle_query_timeout();
             }
             Some(ProtocolEvent::KadRequest { request, source, reply }) => {
                 self.handle_kad_request(request, source, reply);

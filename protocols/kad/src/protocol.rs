@@ -44,7 +44,6 @@ use libp2prs_swarm::Control as SwarmControl;
 use libp2prs_traits::{ReadEx, WriteEx};
 
 use crate::kad::KadPoster;
-use crate::query::QueryStats;
 use crate::record::{self, Record};
 use crate::{dht_proto as proto, KadError, ProviderRecord};
 
@@ -887,12 +886,6 @@ pub(crate) enum ProtocolEvent {
     /// Typically, this comes from either a query activity or an event
     /// notification from event bus(TBD).
     KadPeerStopped(PeerId),
-
-    /// The event to notify that iterative query has been completed.
-    IterativeQueryCompleted(QueryStats),
-
-    /// The event to notify that iterative query has failed due to timeout.
-    IterativeQueryTimeout,
 
     /// Timer event for Provider cleanup.
     ProviderCleanupTimer,

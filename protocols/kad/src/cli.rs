@@ -114,8 +114,7 @@ fn cli_bootstrap(app: &App, _args: &[&str]) -> XcliResult {
     let mut kad = handler(app);
     task::block_on(async {
         println!("start bootstrapping...");
-        let r = kad.bootstrap_wait(vec![]).await;
-        println!("bootstrap done {:?}", r);
+        let _ = kad.bootstrap(vec![]).await;
     });
 
     Ok(CmdExeCode::Ok)
@@ -200,13 +199,19 @@ fn cli_dump_statistics(app: &App, _args: &[&str]) -> XcliResult {
 
     task::block_on(async {
         let stats = kad.dump_statistics().await.unwrap();
-        println!("Total refreshes    : {}", stats.total_refreshes);
-        println!("Successful queries : {}", stats.successful_queries);
-        println!("Timeout queries    : {}", stats.timeout_queries);
-        println!("Running iterative  : {}", stats.running_iterative_queries);
-        println!("Running fixed      : {}", stats.running_fixed_queries);
-        println!("Query details      : {:?}", stats.query);
-        println!("Kad rx messages    : {:?}", stats.message_rx);
+        println!("Total refreshes        : {}", stats.total_refreshes);
+        println!("Iter query executed    : {}", stats.query.iter_query_executed);
+        println!("Iter query completed   : {}", stats.query.iter_query_completed);
+        println!("Iter query timeout     : {}", stats.query.iter_query_timeout);
+        println!("Fixed query executed   : {}", stats.query.fixed_query_executed);
+        println!("Fixed query completed  : {}", stats.query.fixed_query_completed);
+        let running = stats.query.iter_query_executed - stats.query.iter_query_completed - stats.query.iter_query_timeout;
+        println!("Iter query in progress : {}", running);
+        let running = stats.query.fixed_query_executed - stats.query.fixed_query_completed;
+        println!("Fixed query in progress: {}", running);
+        println!("Iter query details     : {:?}", stats.query.iterative);
+        println!("Kad tx messages        : {:?}", stats.query.message_tx);
+        println!("Kad rx messages        : {:?}", stats.message_rx);
     });
 
     Ok(CmdExeCode::Ok)
