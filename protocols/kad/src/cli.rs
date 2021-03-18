@@ -165,15 +165,19 @@ fn cli_dump_storage(app: &App, args: &[&str]) -> XcliResult {
     let _verbose = !args.is_empty();
 
     task::block_on(async {
-        let (providers, records) = kad.dump_storage().await.unwrap();
+        let storage_stat = kad.dump_storage().await.unwrap();
         println!("Providers: ");
-        for provider in providers {
+        for provider in storage_stat.provider {
             println!("{} {:?} {:?}", provider.provider, provider.expires, provider.key);
         }
         // println!("Key Value Publisher Expire");
         println!("Record: ");
-        for record in records {
+        for record in storage_stat.record {
             println!("{:?},{:?},{:?},{:?}", record.key, record.value, record.publisher, record.expires);
+        }
+        println!("Self provide: ");
+        for provided in storage_stat.provided {
+            println!("{:?} {:?}", provided.expires, provided.key);
         }
     });
 

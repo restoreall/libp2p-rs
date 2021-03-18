@@ -147,6 +147,13 @@ pub struct MessageStats {
     pub(crate) put_value: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct StorageStats {
+    pub(crate) provider: Vec<ProviderRecord>,
+    pub(crate) provided: Vec<ProviderRecord>,
+    pub(crate) record: Vec<Record>,
+}
+
 /// The configuration for the `Kademlia` behaviour.
 ///
 /// The configuration is consumed by [`Kademlia::new`].
@@ -927,10 +934,15 @@ impl<TStore> Kademlia<TStore>
     }
 
     // TODO:
-    fn dump_storage(&mut self) -> (Vec<ProviderRecord>, Vec<Record>) {
-        let provide_iter = self.store.provided().map(|item| item.into_owned()).collect();
-        let record_iter = self.store.records().map(|item| item.into_owned()).collect();
-        (provide_iter, record_iter)
+    fn dump_storage(&mut self) -> StorageStats {
+        let provider = self.store.all_providers().map(|item| item.into_owned()).collect();
+        let record = self.store.records().map(|item| item.into_owned()).collect();
+        let provided = self.store.provided().map(|item| item.into_owned()).collect();
+        StorageStats{
+            provider,
+            provided,
+            record
+        }
     }
 
     fn dump_kbuckets(&mut self) -> Vec<KBucketView> {

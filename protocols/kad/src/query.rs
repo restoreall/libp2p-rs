@@ -192,8 +192,8 @@ impl FixedQuery {
     }
 
     pub(crate) fn run<F>(self, f: F)
-    where
-        F: FnOnce(Result<()>) + Send + 'static,
+        where
+            F: FnOnce(Result<()>) + Send + 'static,
     {
         log::debug!("run fixed query {:?}", self.query_type);
 
@@ -432,15 +432,15 @@ impl ClosestPeers {
         self.closest_peers.get(&distance).map(|p| p.peer.clone())
     }
 
-    fn peers_filter(&self, num: usize, p: impl FnMut(&&PeerWithState) -> bool) -> impl Iterator<Item = &PeerWithState> {
+    fn peers_filter(&self, num: usize, p: impl FnMut(&&PeerWithState) -> bool) -> impl Iterator<Item=&PeerWithState> {
         self.closest_peers.values().filter(p).take(num)
     }
 
-    fn peers_in_state_mut(&mut self, state: PeerState, num: usize) -> impl Iterator<Item = &mut PeerWithState> {
+    fn peers_in_state_mut(&mut self, state: PeerState, num: usize) -> impl Iterator<Item=&mut PeerWithState> {
         self.closest_peers.values_mut().filter(move |peer| peer.state == state).take(num)
     }
 
-    fn peers_in_states(&self, states: Vec<PeerState>, num: usize) -> impl Iterator<Item = &PeerWithState> {
+    fn peers_in_states(&self, states: Vec<PeerState>, num: usize) -> impl Iterator<Item=&PeerWithState> {
         self.closest_peers
             .values()
             .filter(move |peer| states.contains(&peer.state))
@@ -616,7 +616,7 @@ impl IterativeQuery {
                 // to PeerStore
                 for peer in closer.iter() {
                     // kingwel, we filter out all loopback addresses
-                    let addrs = peer.multiaddrs.iter().filter(|a| !a.is_loopback_addr()).cloned().collect();
+                    let addrs = peer.clone().multiaddrs;
                     me.swarm.add_addrs(&peer.node_id, addrs, TEMP_ADDR_TTL);
                 }
 
@@ -725,8 +725,8 @@ impl IterativeQuery {
     }
 
     pub(crate) fn run<F>(self, f: F)
-    where
-        F: FnOnce(Result<QueryResult>) + Send + 'static,
+        where
+            F: FnOnce(Result<QueryResult>) + Send + 'static,
     {
         log::debug!("run iterative query {:?} for {:?}", self.query_type, self.key);
 
