@@ -42,7 +42,6 @@ use libp2prs_swarm::cli::swarm_cli_commands;
 use std::convert::TryFrom;
 use std::time::Duration;
 use xcli::*;
-use libp2prs_plaintext::PlainTextConfig;
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -84,12 +83,12 @@ fn run_server(bootstrap_peer: PeerId, bootstrap_addr: Multiaddr) {
 
     let dh = Keypair::<X25519Spec>::new().into_authentic(&keys).unwrap();
 
-    let sec_noise = PlainTextConfig::new(keys.clone());
+    let sec_noise = NoiseConfig::xx(dh, keys.clone());
     let sec_secio = secio::Config::new(keys.clone());
 
     let sec = Selector::new(sec_noise, sec_secio);
 
-    let mux = Selector::new(mplex::Config::new(),yamux::Config::new());
+    let mux = Selector::new(yamux::Config::new(), mplex::Config::new());
     let tu = TransportUpgrade::new(TcpConfig::default(), mux, sec);
 
     let mut swarm = Swarm::new(keys.public())
@@ -115,8 +114,8 @@ fn run_server(bootstrap_peer: PeerId, bootstrap_addr: Multiaddr) {
         swarm = swarm.with_protocol(kad).with_routing(Box::new(kad_control.clone()));
         swarm.start();
 
-        // let bootstrapper = vec![(bootstrap_peer, bootstrap_addr)];
-        // kad_control.bootstrap(bootstrapper).await;
+        let bootstrapper = vec![(bootstrap_peer, bootstrap_addr)];
+        kad_control.bootstrap(bootstrapper).await;
 
         let mut app = App::new("xCLI").version("v0.1").author("kingwel.xie@139.com");
 

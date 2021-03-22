@@ -1750,12 +1750,10 @@ impl MessengerManager {
 
         match r {
             Some(sender) => {
-                log::debug!("Sender exists");
                 Ok(sender)
             }
             None => {
                 // make a new sender
-                log::debug!("Build a new sender");
                 KadMessenger::build(self.swarm.clone(), *peer, self.config.clone()).await
             }
         }

@@ -178,7 +178,6 @@ impl<'a> RecordStore<'a> for MemoryStore {
                 providers.insert(i, record);
                 // Remove the excess provider, if any.
                 if providers.len() > self.config.max_providers_per_key {
-                    log::debug!("provider length {}, self max providers {}", providers.len(), self.config.max_providers_per_key);
                     if let Some(p) = providers.pop() {
                         self.provided.remove(&p);
                     }
@@ -193,8 +192,6 @@ impl<'a> RecordStore<'a> for MemoryStore {
             }
         }
 
-        println!("Provided {:?}", self.provided);
-        println!("Provider {:?}", self.providers);
         Ok(())
     }
 

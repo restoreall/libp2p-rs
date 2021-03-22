@@ -1118,7 +1118,6 @@ impl Swarm {
                 let metric = metric.clone();
                 let ctrl = ctrl.clone();
                 let r = stream_muxer.accept_stream().await;
-                log::debug!("Accept stream");
 
                 // TODO: probably we should spawn a new runtime for protocol selection
                 // As a fact, in go-libp2p, the protocol selection is done in a blocking way...
@@ -1159,7 +1158,6 @@ impl Swarm {
                         break;
                     }
                 }
-                log::debug!("Loop finished");
             }
 
             // As stream_muxer is closed, we wait for its task_handle
