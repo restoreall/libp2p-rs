@@ -30,7 +30,7 @@ use libp2prs_core::{Multiaddr, PeerId};
 use crate::kad::{KBucketView, KademliaStats, StorageStats};
 use crate::protocol::{KadMessengerView, KadPeer};
 use crate::query::PeerRecord;
-use crate::{record, KadError, ProviderRecord, Record};
+use crate::{record, KadError};
 
 type Result<T> = std::result::Result<T, KadError>;
 

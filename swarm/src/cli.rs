@@ -21,8 +21,9 @@
 use std::str::FromStr;
 use xcli::*;
 
-use libp2prs_core::PeerId;
+use libp2prs_core::{PeerId, Multiaddr};
 use libp2prs_runtime::task;
+use std::convert::TryFrom;
 
 use crate::Control;
 
@@ -174,15 +175,22 @@ fn cli_show_peers(app: &App, args: &[&str]) -> XcliResult {
 fn cli_connect(app: &App, args: &[&str]) -> XcliResult {
     let mut swarm = handler(app);
 
-    let peer_id = if args.len() == 1 {
-        PeerId::from_str(args[0]).map_err(|e| XcliError::BadArgument(e.to_string()))?
-    } else {
-        return Err(XcliError::MismatchArgument(1, args.len()));
-    };
+    let result = check_param!(2, 1, args, (PeerId=>1, Multiaddr=>1));
+
+    // let peer_id = if args.len() == 1 {} else {
+    //     return Err(XcliError::MismatchArgument(1, args.len()));
+    // };
 
     task::block_on(async {
-        let r = swarm.new_connection(peer_id).await;
-        println!("Connecting to {}: {:?}", peer_id, r);
+        let peer_id = result.0.unwrap();
+        let addr = result.1;
+        if addr.is_none() {
+            let r = swarm.new_connection(peer_id).await;
+            println!("Connecting to {}: {:?}", peer_id, r);
+        } else {
+            let r = swarm.connect_with_addrs(peer_id, vec![addr.unwrap()]).await;
+            println!("Connecting to {}: {:?}", peer_id, r);
+        }
     });
 
     Ok(CmdExeCode::Ok)

@@ -26,7 +26,7 @@ pub mod store;
 use bytes::Bytes;
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use libp2prs_core::{multihash::Multihash, PeerId};
 
@@ -86,14 +86,14 @@ pub struct Record {
     /// The (original) publisher of the record.
     pub publisher: Option<PeerId>,
     /// The expiration time as measured by a local, monotonic clock.
-    pub expires: Option<Instant>,
+    pub expires: Option<SystemTime>,
 }
 
 impl Record {
     /// Creates a new record for insertion into the DHT.
     pub fn new<K>(key: K, value: Vec<u8>) -> Self
-    where
-        K: Into<Key>,
+        where
+            K: Into<Key>,
     {
         Record {
             key: key.into(),
@@ -103,8 +103,12 @@ impl Record {
         }
     }
 
+    pub fn get_key(&self) -> &Key {
+        &self.key
+    }
+
     /// Checks whether the record is expired w.r.t. the given `Instant`.
-    pub fn is_expired(&self, now: Instant) -> bool {
+    pub fn is_expired(&self, now: SystemTime) -> bool {
         self.expires.map_or(false, |t| now >= t)
     }
 }
@@ -133,8 +137,8 @@ impl Hash for ProviderRecord {
 impl ProviderRecord {
     /// Creates a new provider record for insertion into a `RecordStore`.
     pub fn new<K>(key: K, provider: PeerId, expires: Option<Instant>) -> Self
-    where
-        K: Into<Key>,
+        where
+            K: Into<Key>,
     {
         ProviderRecord {
             key: key.into(),

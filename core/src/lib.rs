@@ -68,3 +68,4 @@ pub mod peerstore;
 
 pub mod pnet;
 pub mod translation;
+pub mod datastore;

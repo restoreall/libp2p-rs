@@ -34,7 +34,7 @@ use libp2prs_swarm::Swarm;
 use libp2prs_tcp::TcpConfig;
 //use libp2prs_traits::{ReadEx, WriteEx};
 use libp2prs_kad::kad::{Kademlia, KademliaConfig};
-use libp2prs_kad::store::MemoryStore;
+use libp2prs_kad::store::MemoryStorage;
 use libp2prs_yamux as yamux;
 
 use libp2prs_kad::cli::dht_cli_commands;
@@ -42,6 +42,7 @@ use libp2prs_swarm::cli::swarm_cli_commands;
 use std::convert::TryFrom;
 use std::time::Duration;
 use xcli::*;
+use libp2prs_kad::record::store::{ProviderStore, RecordStore};
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -106,8 +107,19 @@ fn run_server(bootstrap_peer: PeerId, bootstrap_addr: Multiaddr) {
             .with_refresh_interval(None)
             .with_query_timeout(Duration::from_secs(90));
 
-        let store = MemoryStore::new(*swarm.local_peer_id());
-        let kad = Kademlia::with_config(*swarm.local_peer_id(), store, config);
+        // let store = MemoryStore::new(*swarm.local_peer_id());
+
+        let db = MemoryStorage::default();
+
+        let provider_store = db.clone();
+        let record_store = db.clone();
+        let provided_store = db.clone();
+
+        let provider = ProviderStore::new(provider_store, provided_store, *swarm.local_peer_id(), 1024, 1024);
+
+        let record = RecordStore::new(65 * 1024, record_store);
+
+        let kad = Kademlia::with_config(*swarm.local_peer_id(), provider, record, config);
         let mut kad_control = kad.control();
 
         // update Swarm to support Kad and Routing

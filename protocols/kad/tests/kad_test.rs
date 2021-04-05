@@ -23,7 +23,7 @@ use libp2prs_core::multiaddr::protocol::Protocol;
 use libp2prs_core::transport::memory::MemoryTransport;
 use libp2prs_core::transport::upgrade::TransportUpgrade;
 use libp2prs_core::{Multiaddr, PeerId};
-use libp2prs_kad::store::MemoryStore;
+// use libp2prs_kad::store::MemoryStore;
 use libp2prs_kad::{kad::Kademlia, Control as kad_control};
 use libp2prs_plaintext as plaintext;
 use libp2prs_runtime::task;
@@ -33,6 +33,7 @@ use libp2prs_yamux as yamux;
 use quickcheck::{QuickCheck, TestResult};
 use rand::random;
 use std::time::Duration;
+use libp2prs_kad::record::store::{MemoryStorage, ProviderStore, RecordStore};
 
 fn setup_kad(keys: Keypair, listen_addr: Multiaddr) -> (swarm_control, kad_control) {
     let sec = plaintext::PlainTextConfig::new(keys.clone());
@@ -46,8 +47,11 @@ fn setup_kad(keys: Keypair, listen_addr: Multiaddr) -> (swarm_control, kad_contr
     log::info!("Swarm created, local-peer-id={:?}", swarm.local_peer_id());
 
     // start kad protocol
-    let store = MemoryStore::new(*swarm.local_peer_id());
-    let kad = Kademlia::new(*swarm.local_peer_id(), store);
+    // let store = MemoryStore::new(*swarm.local_peer_id());
+    let db = MemoryStorage::default();
+    let provider = ProviderStore::new(db.clone(), db.clone(), *swarm.local_peer_id(), 1024, 1024);
+    let record = RecordStore::new(65 * 1024, db.clone());
+    let kad = Kademlia::new(*swarm.local_peer_id(), provider, record);
     let kad_ctrl = kad.control();
 
     // register handler to swarm

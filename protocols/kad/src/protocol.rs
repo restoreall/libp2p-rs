@@ -46,6 +46,7 @@ use libp2prs_traits::{ReadEx, WriteEx};
 use crate::kad::KadPoster;
 use crate::record::{self, Record};
 use crate::{dht_proto as proto, KadError, ProviderRecord};
+use std::time::SystemTime;
 
 /// The protocol name used for negotiating with multistream-select.
 pub const DEFAULT_PROTO_NAME: &[u8] = b"/ipfs/kad/1.0.0";
@@ -502,7 +503,7 @@ pub enum KadResponseMsg {
 }
 
 /// Converts a `KadRequestMsg` into the corresponding protobuf message for sending.
-fn req_msg_to_proto(kad_msg: KadRequestMsg) -> proto::Message {
+pub(crate) fn req_msg_to_proto(kad_msg: KadRequestMsg) -> proto::Message {
     match kad_msg {
         KadRequestMsg::Ping => proto::Message {
             r#type: proto::message::MessageType::Ping as i32,
@@ -587,7 +588,7 @@ fn resp_msg_to_proto(kad_msg: KadResponseMsg) -> proto::Message {
 /// Converts a received protobuf message into a corresponding `KadRequestMsg`.
 ///
 /// Fails if the protobuf message is not a valid and supported Kademlia request message.
-fn proto_to_req_msg(message: proto::Message) -> Result<KadRequestMsg, io::Error> {
+pub(crate) fn proto_to_req_msg(message: proto::Message) -> Result<KadRequestMsg, io::Error> {
     let msg_type = proto::message::MessageType::from_i32(message.r#type)
         .ok_or_else(|| invalid_data(format!("unknown message type: {}", message.r#type)))?;
 
@@ -689,7 +690,7 @@ fn proto_to_resp_msg(message: proto::Message) -> Result<KadResponseMsg, io::Erro
     }
 }
 
-fn record_from_proto(record: proto::Record) -> Result<Record, io::Error> {
+pub(crate) fn record_from_proto(record: proto::Record) -> Result<Record, io::Error> {
     let key = record::Key::from(record.key);
     let value = record.value;
 
@@ -701,26 +702,86 @@ fn record_from_proto(record: proto::Record) -> Result<Record, io::Error> {
         None
     };
 
-    let expires = if record.ttl > 0 {
-        Some(Instant::now() + Duration::from_secs(record.ttl as u64))
+    return match record.system_time {
+        Some(time) => {
+            let timestamp = prost_types::Timestamp { seconds: time.seconds, nanos: time.nanos };
+            let expires = Some(SystemTime::try_from(timestamp).unwrap());
+            Ok(Record {
+                key,
+                value,
+                publisher,
+                expires,
+            })
+        }
+        None => {
+            Ok(Record {
+                key,
+                value,
+                publisher,
+                expires: None,
+            })
+        }
+    };
+}
+
+pub(crate) fn record_to_proto(record: Record) -> proto::Record {
+    match record.expires {
+        Some(time) => {
+            let ts = prost_types::Timestamp::from(time);
+            proto::Record {
+                key: record.key.to_vec(),
+                value: record.value,
+                publisher: record.publisher.map(|id| id.to_bytes()).unwrap_or_default(),
+                system_time: Some(proto::Timestamp {
+                    seconds: ts.seconds,
+                    nanos: ts.nanos,
+                }),
+                time_received: String::new(),
+            }
+        }
+        None => {
+            proto::Record {
+                key: record.key.to_vec(),
+                value: record.value,
+                publisher: record.publisher.map(|id| id.to_bytes()).unwrap_or_default(),
+                system_time: None,
+                time_received: String::new(),
+            }
+        }
+    }
+}
+
+pub(crate) fn provider_from_proto(provider: proto::Provider) -> Result<ProviderRecord, io::Error> {
+    let key = record::Key::from(provider.key);
+
+    let peer_id = PeerId::from_bytes(&provider.peer_id)
+        .map_err(|_| invalid_data("Invalid publisher peer ID."))?;
+
+    let expires = if provider.ttl > 0 {
+        Some(Instant::now() + Duration::from_secs(provider.ttl as u64))
     } else {
         None
     };
 
-    Ok(Record {
+    Ok(ProviderRecord {
         key,
-        value,
-        publisher,
+        provider: peer_id,
         expires,
     })
 }
 
-fn record_to_proto(record: Record) -> proto::Record {
-    proto::Record {
-        key: record.key.to_vec(),
-        value: record.value,
-        publisher: record.publisher.map(|id| id.to_bytes()).unwrap_or_default(),
-        ttl: record
+pub(crate) fn provider_to_vec(provider: ProviderRecord) -> Vec<u8> {
+    let encoded_record = provider_to_proto(provider);
+    let mut buf: Vec<u8> = Vec::with_capacity(encoded_record.encoded_len());
+    encoded_record.encode(&mut buf).expect("Vec<u8> provides capacity as needed");
+    buf
+}
+
+pub(crate) fn provider_to_proto(provider: ProviderRecord) -> proto::Provider {
+    proto::Provider {
+        key: provider.key.to_vec(),
+        peer_id: provider.provider.to_bytes(),
+        ttl: provider
             .expires
             .map(|t| {
                 let now = Instant::now();
@@ -731,21 +792,39 @@ fn record_to_proto(record: Record) -> proto::Record {
                 }
             })
             .unwrap_or(0),
-        time_received: String::new(),
     }
+}
+
+pub(crate) fn provider_vec_to_proto(vec: Vec<ProviderRecord>) -> proto::ProviderVector {
+    let mut vector = Vec::new();
+    for v in vec {
+        vector.push(provider_to_proto(v));
+    }
+    proto::ProviderVector {
+        provider: vector
+    }
+}
+
+pub(crate) fn provider_vec_from_proto(vec: proto::ProviderVector) -> Result<Vec<ProviderRecord>, io::Error> {
+    let mut provider = vec![];
+    let vector = vec.provider;
+    for v in vector {
+        let result = provider_from_proto(v).unwrap();
+        provider.push(result);
+    }
+    Ok(provider)
 }
 
 /// Creates an `io::Error` with `io::ErrorKind::InvalidData`.
 fn invalid_data<E>(e: E) -> io::Error
-where
-    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     io::Error::new(io::ErrorKind::InvalidData, e)
 }
 
 #[cfg(test)]
 mod tests {
-
     /*// TODO: restore
     use self::libp2p_tcp::TcpConfig;
     use self::tokio::runtime::current_thread::Runtime;

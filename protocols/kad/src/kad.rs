@@ -23,7 +23,7 @@ use std::borrow::Borrow;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures::{
     channel::{mpsc, oneshot},
@@ -48,11 +48,13 @@ use crate::store::RecordStore;
 use crate::{kbucket, record, KadError, ProviderRecord, Record};
 use libp2prs_core::peerstore::{ADDRESS_TTL, PROVIDER_ADDR_TTL};
 use libp2prs_swarm::protocol_handler::{IProtocolHandler, ProtocolImpl};
+use libp2prs_core::datastore::DataStore;
+use crate::record::store::ProviderStore;
 
 type Result<T> = std::result::Result<T, KadError>;
 
 /// `Kademlia` implements the libp2p Kademlia protocol.
-pub struct Kademlia<TStore> {
+pub struct Kademlia<TStore: libp2prs_core::datastore::DataStore> {
     /// The Kademlia routing table.
     kbuckets: KBucketsTable<kbucket::Key<PeerId>, PeerInfo>,
 
@@ -110,7 +112,11 @@ pub struct Kademlia<TStore> {
     local_addrs: Vec<Multiaddr>,
 
     /// The record storage.
-    store: TStore,
+    // store: TStore,
+
+    provider: ProviderStore<TStore>,
+
+    record: RecordStore<TStore>,
 
     // Used to communicate with Swarm.
     swarm: Option<SwarmControl>,
@@ -150,6 +156,7 @@ pub struct MessageStats {
 #[derive(Debug, Clone, Default)]
 pub struct StorageStats {
     pub(crate) provider: Vec<ProviderRecord>,
+    // TODO: DJW
     pub(crate) provided: Vec<ProviderRecord>,
     pub(crate) record: Vec<Record>,
 }
@@ -384,11 +391,11 @@ impl KadPoster {
 
 impl<TStore> Kademlia<TStore>
     where
-            for<'a> TStore: RecordStore<'a> + Send + 'static,
+            for<'a> TStore: DataStore + Send + 'static,
 {
     /// Creates a new `Kademlia` network behaviour with a default configuration.
-    pub fn new(id: PeerId, store: TStore) -> Self {
-        Self::with_config(id, store, Default::default())
+    pub fn new(id: PeerId, provider: ProviderStore<TStore>, record: RecordStore<TStore>) -> Self {
+        Self::with_config(id, provider, record, Default::default())
     }
 
     // /// Get the protocol name of this kademlia instance.
@@ -397,14 +404,16 @@ impl<TStore> Kademlia<TStore>
     // }
 
     /// Creates a new `Kademlia` network behaviour with the given configuration.
-    pub fn with_config(id: PeerId, store: TStore, config: KademliaConfig) -> Self {
+    pub fn with_config(id: PeerId, provider: ProviderStore<TStore>, record: RecordStore<TStore>, config: KademliaConfig) -> Self {
         let local_key = kbucket::Key::from(id);
 
         let (event_tx, event_rx) = mpsc::unbounded();
         let (control_tx, control_rx) = mpsc::unbounded();
 
         Kademlia {
-            store,
+            // store,
+            provider,
+            record,
             swarm: None,
             event_rx,
             event_tx,
@@ -688,9 +697,9 @@ impl<TStore> Kademlia<TStore>
     }
 
     /// Gets a mutable reference to the record store.
-    pub fn store_mut(&mut self) -> &mut TStore {
-        &mut self.store
-    }
+    // pub fn store_mut(&mut self) -> &mut TStore {
+    //     &mut self.store
+    // }
 
     // prepare and generate a IterativeQuery for iterative query.
     fn prepare_iterative_query(&mut self, qt: QueryType, key: record::Key) -> IterativeQuery {
@@ -780,9 +789,9 @@ impl<TStore> Kademlia<TStore>
         let quorum = self.query_config.k_value.get();
         let mut records = Vec::with_capacity(quorum);
 
-        if let Some(record) = self.store.get(&key) {
-            if record.is_expired(Instant::now()) {
-                self.store.remove(&key)
+        if let Some(record) = self.record.get(&key) {
+            if record.is_expired(SystemTime::now()) {
+                self.record.remove(&key)
             } else {
                 records.push(PeerRecord {
                     peer: None,
@@ -850,11 +859,11 @@ impl<TStore> Kademlia<TStore>
         };
 
         record.publisher = Some(*self.kbuckets.self_key().preimage());
-        if let Err(e) = self.store.put(record.clone()) {
+        if let Err(e) = self.record.put(record.clone()) {
             f(Err(e));
             return;
         }
-        record.expires = record.expires.or_else(|| self.record_ttl.map(|ttl| Instant::now() + ttl));
+        record.expires = record.expires.or_else(|| self.record_ttl.map(|ttl| SystemTime::now() + ttl));
 
         let config = self.query_config.clone();
         let messengers = self.messengers.clone().expect("must be Some");
@@ -881,9 +890,9 @@ impl<TStore> Kademlia<TStore>
     /// the record will no longer be periodically re-published, allowing the
     /// record to eventually expire throughout the DHT.
     fn remove_record(&mut self, key: &record::Key) {
-        if let Some(r) = self.store.get(key) {
+        if let Some(r) = self.record.get(key) {
             if r.publisher.as_ref() == Some(self.kbuckets.self_key().preimage()) {
-                self.store.remove(key)
+                self.record.remove(key)
             }
         }
     }
@@ -935,13 +944,14 @@ impl<TStore> Kademlia<TStore>
 
     // TODO:
     fn dump_storage(&mut self) -> StorageStats {
-        let provider = self.store.all_providers().map(|item| item.into_owned()).collect();
-        let record = self.store.records().map(|item| item.into_owned()).collect();
-        let provided = self.store.provided().map(|item| item.into_owned()).collect();
-        StorageStats{
+        let provider = self.provider.all_providers().values().flatten().map(|item| item.clone()).collect();
+        let record = self.record.records().values().map(|item| item.clone()).collect();
+        // TODO: DJW
+        let provided = self.provider.provided().into_iter().collect();
+        StorageStats {
             provider,
             provided,
-            record
+            record,
         }
     }
 
@@ -1002,7 +1012,7 @@ impl<TStore> Kademlia<TStore>
             F: FnOnce(Result<()>) + Send + 'static,
     {
         let provider = ProviderRecord::new(key.clone(), *self.kbuckets.self_key().preimage(), None);
-        if let Err(e) = self.store.add_provider(provider.clone()) {
+        if let Err(e) = self.provider.add_provider(provider.clone()) {
             f(Err(e));
             return;
         }
@@ -1027,7 +1037,7 @@ impl<TStore> Kademlia<TStore>
     /// This is a local operation. The local node will still be considered as a
     /// provider for the key by other nodes until these provider records expire.
     fn stop_providing(&mut self, key: &record::Key) {
-        self.store.remove_provider(key, self.kbuckets.self_key().preimage());
+        self.provider.remove_provider(key, self.kbuckets.self_key().preimage());
     }
 
     /// Finds the closest peers to a `target` in the context of a request by
@@ -1074,7 +1084,7 @@ impl<TStore> Kademlia<TStore>
         let connected = &self.connected_peers;
         let local_addrs = &self.local_addrs;
         let swarm = self.swarm.as_ref().expect("must be Some");
-        self.store
+        self.provider
             .providers(key)
             .into_iter()
             .filter_map(move |p| {
@@ -1151,7 +1161,7 @@ impl<TStore> Kademlia<TStore>
             });
         }
 
-        let now = Instant::now();
+        let now = SystemTime::now();
 
         // Calculate the expiration exponentially inversely proportional to the
         // number of nodes between the local node and the closest node to the key
@@ -1181,7 +1191,7 @@ impl<TStore> Kademlia<TStore>
             // The record is cloned because of the weird libp2p protocol
             // requirement to send back the value in the response, although this
             // is a waste of resources.
-            match self.store.put(record.clone()) {
+            match self.record.put(record.clone()) {
                 Ok(()) => log::debug!("Record stored: {:?}; {} bytes", record.key, record.value.len()),
                 Err(e) => {
                     log::debug!("Record not stored: {:?}", e);
@@ -1214,7 +1224,7 @@ impl<TStore> Kademlia<TStore>
                 .add_addrs(&provider.node_id, provider.multiaddrs, PROVIDER_ADDR_TTL);
 
             let record = ProviderRecord::new(key, provider.node_id, self.provider_record_ttl.map(|ttl| Instant::now() + ttl));
-            if let Err(e) = self.store.add_provider(record) {
+            if let Err(e) = self.provider.add_provider(record) {
                 log::debug!("Provider record not stored: {:?}", e);
             }
         }
@@ -1406,10 +1416,10 @@ impl<TStore> Kademlia<TStore>
             KadRequestMsg::GetValue { key } => {
                 self.stats.message_rx.get_value += 1;
                 // Lookup the record locally.
-                let record = match self.store.get(&key) {
+                let record = match self.record.get(&key) {
                     Some(record) => {
-                        if record.is_expired(Instant::now()) {
-                            self.store.remove(&key);
+                        if record.is_expired(SystemTime::now()) {
+                            self.record.remove(&key);
                             None
                         } else {
                             Some(record.into_owned())
@@ -1437,16 +1447,18 @@ impl<TStore> Kademlia<TStore>
         log::info!("handle_provider_cleanup, invoked at {:?}", now);
 
         // TODO: it is pretty confusing that self-owned Providers get recycled!!!
-        //let provider_records = self.store.provided()
+        //let provider_records = self.record.provided()
         let provider_records = self
-            .store
+            .provider
             .all_providers()
+            .values()
+            .flatten()
             .filter(|r| r.is_expired(now))
-            .map(|r| r.into_owned())
+            .map(|r| r.clone())
             .collect::<Vec<_>>();
 
         provider_records.into_iter().for_each(|r| {
-            self.store.remove_provider(&r.key, &r.provider);
+            self.provider.remove_provider(&r.key, &r.provider);
         });
     }
 
@@ -1675,7 +1687,7 @@ impl<TStore> Kademlia<TStore>
 
 impl<TStore> ProtocolImpl for Kademlia<TStore>
     where
-            for<'a> TStore: RecordStore<'a> + Send + 'static,
+            for<'a> TStore: DataStore + Send + 'static,
 {
     fn handler(&self) -> IProtocolHandler {
         Box::new(KadProtocolHandler::new(self.protocol_config.clone(), self.poster()))

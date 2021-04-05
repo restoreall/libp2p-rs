@@ -121,6 +121,7 @@ rand = "0.7"
 lazy_static = "1.4"
 rustls = "0.19"
 structopt = "0.3.9"
+sled = "0.34"
 
 
 [target.'cfg(unix)'.dev-dependencies]
